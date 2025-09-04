@@ -47,12 +47,15 @@ private:
 
 void ToolHandler::initTools() {
     std::array<double, Tool::toolSizes> thickness;
-    // pen thicknesses = 0.15, 0.3, 0.5, 0.8, 2 mm
-    thickness[TOOL_SIZE_VERY_FINE] = 0.42;
-    thickness[TOOL_SIZE_FINE] = 0.85;
-    thickness[TOOL_SIZE_MEDIUM] = 1.41;
-    thickness[TOOL_SIZE_THICK] = 2.26;
-    thickness[TOOL_SIZE_VERY_THICK] = 5.67;
+    // ------ Pen Thickness ----
+    // Old tiny "very fine" and "fine" were too thin
+    // Start from the old MEDIUM and add intermediate steps; keep VERY_THICK unchanged.
+    thickness[TOOL_SIZE_VERY_FINE] = 1.41;   // previously was MEDIUM (usable smallest)
+    thickness[TOOL_SIZE_FINE]      = 1.90;   // slightly thicker than very_fine
+    thickness[TOOL_SIZE_MEDIUM]    = 2.60;   // middle range
+    thickness[TOOL_SIZE_THICK]     = 3.80;   // stronger line but not huge
+    thickness[TOOL_SIZE_VERY_THICK]= 5.67;   // keep as-is (your requested unchanged value)
+
     tools[TOOL_PEN - TOOL_PEN] = std::make_unique<Tool>(
             "pen", TOOL_PEN, Colors::xopp_royalblue,
             TOOL_CAP_COLOR | TOOL_CAP_SIZE | TOOL_CAP_RULER | TOOL_CAP_RECTANGLE | TOOL_CAP_ELLIPSE | TOOL_CAP_ARROW |
@@ -68,12 +71,14 @@ void ToolHandler::initTools() {
     tools[TOOL_ERASER - TOOL_PEN] =
             std::make_unique<Tool>("eraser", TOOL_ERASER, Colors::black, TOOL_CAP_SIZE, thickness);
 
-    // highlighter thicknesses = 1, 3, 7 mm
-    thickness[TOOL_SIZE_VERY_FINE] = 1;
-    thickness[TOOL_SIZE_FINE] = 2.83;
-    thickness[TOOL_SIZE_MEDIUM] = 8.50;
-    thickness[TOOL_SIZE_THICK] = 19.84;
-    thickness[TOOL_SIZE_VERY_THICK] = 30;
+    // ---------- HIGHLIGHTER 
+    // Start the array at the old MEDIUM
+    // increase the mid values, and keep VERY_THICK unchanged.
+    thickness[TOOL_SIZE_VERY_FINE] = 8.50;   // previously was MEDIUM (usable smallest)
+    thickness[TOOL_SIZE_FINE]      = 11.5;   // intermediate
+    thickness[TOOL_SIZE_MEDIUM]    = 14.0;   // larger medium (you said medium was a bit small)
+    thickness[TOOL_SIZE_THICK]     = 18.0;   // slightly reduced from previous ~19.84 
+    thickness[TOOL_SIZE_VERY_THICK]= 30.0;   // keep as-is
     tools[TOOL_HIGHLIGHTER - TOOL_PEN] = std::make_unique<Tool>(
             "highlighter", TOOL_HIGHLIGHTER, Colors::yellow,
             TOOL_CAP_COLOR | TOOL_CAP_SIZE | TOOL_CAP_RULER | TOOL_CAP_RECTANGLE | TOOL_CAP_ELLIPSE | TOOL_CAP_ARROW |
