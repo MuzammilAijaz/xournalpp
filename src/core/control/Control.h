@@ -50,6 +50,7 @@ class ToolbarDragDropHandler;
 class MetadataEntry;
 class MetadataCallbackData;
 class PageBackgroundChangeController;
+class PageTemplateSettings;
 class PageTypeHandler;
 class BaseExportJob;
 class LayerController;
@@ -70,6 +71,7 @@ class XojFont;
 class XojPdfRectangle;
 class Callback;
 class ActionDatabase;
+class NavigationHistory;
 
 class Control:
         public ToolListener,
@@ -138,9 +140,11 @@ public:
      * @param callback Called after trying to close the document, with param true in case of success, false otherwise.
      * @param allowDestroy Whether clicking "Discard" should destroy the current document.
      * @param allowCancel Whether the user should be able to cancel closing the document.
+     * @param forceClose Whether to skip the save dialog and unconditionally discard unsaved changes.
      * @return true if the user closed the document, otherwise false.
      */
-    void close(std::function<void(bool)> callback, bool allowDestroy = false, bool allowCancel = true);
+    void close(std::function<void(bool)> callback, bool allowDestroy = false, bool allowCancel = true,
+               bool forceClose = false);
 
     // Menu edit
     void showSettings();
@@ -230,9 +234,9 @@ public:
     size_t firePageSelected(const PageRef& page);
     void firePageSelected(size_t page);
 
-    void addDefaultPage(const std::optional<std::string>& pageTemplate, Document* doc = nullptr);
+    void addDefaultPage(const std::optional<PageTemplateSettings>& pageTemplate, Document* doc = nullptr);
     void duplicatePage();
-    void insertNewPage(size_t position, bool shouldScrollToPage = true);
+    void insertNewPage(size_t position, bool automatedInsertion = false);
     void appendNewPdfPages();
     void insertPage(const PageRef& page, size_t position, bool shouldScrollToPage = true);
     void deletePage();
@@ -249,6 +253,11 @@ public:
      * Disable / enable page action buttons
      */
     void updatePageActions();
+
+    /**
+     * Get the navigation history handler.
+     */
+    NavigationHistory* getNavigationHistory() const;
 
     // selection handling
     void clearSelection();
@@ -319,6 +328,12 @@ public:
     PluginController* getPluginController() const;
     const Palette& getPalette() const;
 
+    /**
+     * Show floating toolbox at specified coordinates
+     * @param x x coordinate relative to main window
+     * @param y y coordinate relative to main window
+     */
+    void showFloatingToolbox(int x, int y);
 
     bool copy();
     bool cut();
@@ -488,8 +503,6 @@ private:
 
     ScrollHandler* scrollHandler;
 
-    std::unique_ptr<AudioController> audioController;
-
     ToolbarDragDropHandler* dragDropHandler = nullptr;
 
     GApplication* gtkApp = nullptr;
@@ -549,6 +562,8 @@ private:
     std::unique_ptr<GeometryTool> geometryTool;
     std::unique_ptr<GeometryToolController> geometryToolController;
 
+    std::unique_ptr<NavigationHistory> navHistory;
+
     /**
      * Manage all Xournal++ plugins
      */
@@ -557,4 +572,7 @@ private:
     std::unique_ptr<ActionDatabase> actionDB;
     template <Action a>
     friend struct ActionProperties;
+
+    // Keep after the ActionDatabase so it is destroyed first: ~AudioController refers to the ActionDatabase
+    std::unique_ptr<AudioController> audioController;
 };

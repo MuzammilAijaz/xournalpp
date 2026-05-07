@@ -18,6 +18,8 @@ Several of the main ways that you can contribute to the project include:
 ## Contributing website improvements
 
 For making changes to the website, please go to [xournalpp/xournalpp.github.io](https://github.com/xournalpp/xournalpp.github.io).
+Make sure to locally test your changes with [MkDocs](https://github.com/xournalpp/xournalpp.github.io?tab=readme-ov-file#how-to-contribute)
+before you send a PR.
 
 ## Contributing translation improvements
 
@@ -48,6 +50,10 @@ The process for contributing code changes works as follows:
 4. After receiving maintainer approval, the PR is merged after a short grace
    period.
 
+If your pull request does not need Xournal++ to be built to test it (e.g. for a
+README update), you can prepend [skip ci] to the title of the commit to disable
+CI running.
+
 ### Creating a fork
 
 To make a code change, you'll need to first fork the repository on GitHub, if
@@ -63,7 +69,7 @@ You should try to first clone your fork and then compile it manually. The
 instructions for compiling Xournal++ depend on your operating system:
 
 * [`LinuxBuild.md`](readme/LinuxBuild.md)
-* [`MacBuild.md`](readme/MacBuild.md),
+* [`MacBuild.md`](readme/MacBuild.md)
 * [`WindowsBuild.md`](readme/WindowsBuild.md)
 
 ### Code conventions and guidelines

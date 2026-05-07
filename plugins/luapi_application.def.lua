@@ -113,6 +113,54 @@ function app.openDialog(message, options, cb, error) end
 ---    that receives the mode. This is useful for callback functions that are shared among multiple menu entries.
 function app.registerUi(opts) end
 
+--- *
+--- Change the action's state, triggering callbacks. Actions with state from an enum
+--- (like ToolType, ToolSize, EraserSize, OrderChange) should be accessed via the app.C
+--- table of constants for consistency between different versions of Xournal++
+--- @param action Action
+--- @param state any
+--- 
+--- Example 1: app.changeActionState("select-tool",  app.C.Tool_text)
+--- Example 2: app.changeActionState("set-layout-vertical", false)
+--- Example 3: app.changeActionState("set-columns-or-rows", -3)      # 3 rows
+--- Example 4: app.changeActionState("tool-color", 0xff0000)         # red color
+--- Example 5: app.changeActionState("zoom", 2.25)
+--- Example 6: app.changeActionState("tool-pen-line-style", "cust: 1 5 3 5")
+function app.changeActionState(action, state) end
+
+--- *
+--- Get the action's state. For actions with state from an enum
+--- (like ToolType, ToolSize, EraserSize, OrderChange) the return value should
+--- be compared to the app.C table of constants for consistency between different
+--- versions of Xournal++
+--- @param action Action
+--- 
+--- Example 1: if app.getActionState("select-tool") == app.C.Tool_text then
+---               print("Currently the text tool is selected")
+---            end
+--- Example 2: app.getActionState("set-layout-vertical")    -- whether the layout is vertical or not
+--- Example 3: app.getActionState("set-columns-or-rows")    -- number of columns (positive values) or rows (negative
+--- values) Example 4: app.getActionState("tool-color")             -- current color Example 5:
+--- app.getActionState("zoom")                   -- current zoom value Example 6:
+--- app.getActionState("tool-pen-line-style")    -- current pen line style (as a string)
+function app.getActionState(action) end
+
+--- *
+--- Activate the action, triggering callbacks. Actions with state from an enum
+--- (like ToolType, ToolSize, EraserSize, OrderChange) should be accessed via the app.C
+--- table of constants for consistency between different versions of Xournal++
+--- @param action Action
+--- @param state nil | any
+--- 
+--- Example 1: app.activateAction("arrange-selection-order", app.C.OrderChange.bringForward)
+--- Example 2: app.activateAction("setsquare")
+--- Example 3: app.activateAction("tool-fill")
+function app.activateAction(action, state) end
+
+--- THIS FUNCTION IS DEPRECATED AND WILL BE REMOVED SOON. Use applib_changeActionState or
+--- applib_activateAction instead.
+--- 
+--- @deprecated
 --- Execute an UI action (usually internally called from Toolbar / Menu)
 --- The argument consists of a Lua table with 3 keys: "action", "group" and "enabled"
 --- The key "group" is currently only used for debugging purpose and can safely be omitted.
@@ -127,6 +175,9 @@ function app.registerUi(opts) end
 --- turns off the Ellipse drawing type
 function app.uiAction(opts) end
 
+--- THIS FUNCTION IS DEPRECATED AND WILL BE REMOVED SOON. Use applib_activateAction instead.
+--- 
+--- @deprecated
 --- Execute action from sidebar menu
 --- 
 --- @param action string the desired action
@@ -135,6 +186,9 @@ function app.uiAction(opts) end
 --- moves down the current page or layer, depending on which sidebar tab is selected
 function app.sidebarAction(action) end
 
+--- THIS FUNCTION IS DEPRECATED AND WILL BE REMOVED SOON. No substitute needed.
+--- 
+--- @deprecated
 --- Get the index of the currently active sidebar-page.
 --- 
 --- @return integer pageNr pageNr of the sidebar page
@@ -142,6 +196,9 @@ function app.sidebarAction(action) end
 --- Example: app.getSidebarPageNo() -- returns e.g. 1
 function app.getSidebarPageNo() end
 
+--- THIS FUNCTION IS DEPRECATED AND WILL BE REMOVED SOON. No substitute needed.
+--- 
+--- @deprecated
 --- Set the currently active sidebar-page by its index.
 --- 
 --- @param pageNr integer pageNr of the sidebar page
@@ -152,6 +209,9 @@ function app.getSidebarPageNo() end
 --- Example: app.setSidebarPageNo(3) -- sets the sidebar-page to preview Layer
 function app.setSidebarPageNo(pageNr) end
 
+--- THIS FUNCTION IS DEPRECATED AND WILL BE REMOVED SOON. Use applib_activateAction instead.
+--- 
+--- @deprecated
 --- Execute action from layer controller
 --- 
 --- @param action string the desired action
@@ -159,6 +219,17 @@ function app.setSidebarPageNo(pageNr) end
 --- Example: app.layerAction("ACTION_DELETE_LAYER")
 --- deletes the current layer
 function app.layerAction(action) end
+
+--- Show the floating toolbox at the specified coordinates relative to the main window
+--- 
+--- @param x integer x coordinate relative to main window
+--- @param y integer y coordinate relative to main window
+--- 
+--- Example: app.showFloatingToolbox(100, 200)
+--- Shows the floating toolbox at position (100, 200) relative to the main window
+--- 
+--- Note: Coordinates are automatically clamped to window bounds.
+function app.showFloatingToolbox(x, y) end
 
 --- Given a table containing a series of splines, draws a batch of strokes on the canvas.
 --- Expects a table of tables containing eight coordinate pairs, along with attributes of the stroke.
@@ -305,16 +376,20 @@ function app.addStrokes(opts) end
 --- }
 function app.addTexts(opts) end
 
---- Returns a list of lua table of the texts (from current selection / current layer).
---- Is mostly inverse to app.addTexts (except getTexts will also retrieve the width/height of the textbox)
+--- Returns a list of lua table of the texts (from current selection / current layer / current page / all pages).
+--- When called with "page" to retrieve all elements on the current page, it also adds a field "layer" for the
+--- layer containing the element, and when called with "all" it additionally adds a field "page" containing its page
+--- index together with its layer (all of them being indexed from 1).
 --- 
---- @param type string "selection" or "layer"
+--- Is mostly inverse to app.addTexts (except getTexts may also retrieve the width/height/page/layer of the textbox)
+--- 
+--- @param type string "selection" or "layer" or "page" or "all"
 --- @return {text:string, font:{name:string, size:number}, color:integer, x:number, y:number, width:number,
---- height:number, ref:lightuserdata}[] texts
+--- height:number, ref:lightuserdata, page:number|nil, layer:number|nil}[] texts
 --- 
---- Required argument: type ("selection" or "layer")
+--- Required argument: type ("selection" or "layer" or "page" or "all")
 --- 
---- Example: local texts = app.getTexts("layer")
+--- Example: local texts = app.getTexts("all")
 --- 
 --- possible return value:
 --- {
@@ -330,6 +405,8 @@ function app.addTexts(opts) end
 ---     width = 55.0,
 ---     height = 23.0,
 ---     ref = userdata: 0x5f644c0700d0
+---     page = 1, -- Only present when called with the "all" argument
+---     layer = 1, -- Only present when called with the "all" or "page" argument
 ---   },
 ---   {
 ---     text = "Testing",
@@ -338,26 +415,32 @@ function app.addTexts(opts) end
 ---             size = 8.0,
 ---            },
 ---     color = 0x0,
----     x = 150.0,,
+---     x = 150.0,
 ---     y = 70.0,
 ---     width = 55.0,
 ---     height = 23.0,
 ---     ref = userdata: 0x5f644c0701e8
+---     page = 2,
+---     layer = 1,
 ---   },
 --- }
 --- 
 function app.getTexts(type) end
 
---- Puts a Lua Table of the Strokes (from the selection tool / selected layer) onto the stack.
+--- Puts a Lua Table of the Strokes (from the selection tool / selected layer / selected page / all document) onto the
+--- stack. When called with "page" to retrieve all elements on the current page, it also adds a field "layer" for
+--- the layer containing the element, and when called with "all" it additionally adds a field "page" containing its page
+--- index together with its layer (all of them being indexed from 1).
+--- 
 --- Is inverse to app.addStrokes
 --- 
---- @param type string "selection" or "layer"
+--- @param type string "selection" or "layer" or "page" or "all"
 --- @return {x:number[], y:number[], pressure:number[], tool:string, width:number, color:integer, fill:number,
---- linestyle:string, ref:lightuserdata}[] strokes
+--- linestyle:string, ref:lightuserdata, page:number|nil, layer:number|nil}[] strokes
 --- 
---- Required argument: type ("selection" or "layer")
+--- Required argument: type ("selection" or "layer" or "page" or "all")
 --- 
---- Example: local strokes = app.getStrokes("selection")
+--- Example: local strokes = app.getStrokes("all")
 --- 
 --- possible return value:
 --- {
@@ -372,7 +455,9 @@ function app.getTexts(type) end
 ---             ["color"] = 0xa000f0,
 ---             ["fill"] = 0,
 ---             ["lineStyle"] = "plain",
----             ["ref"] = userdata: 0x5f644c02c538
+---             ["ref"] = userdata: 0x5f644c02c538,
+---             ["page"] = 1, -- Only present when called with "all"
+---             ["layer"] = 1, -- Only present when called with "all" or "page"
 ---         },
 ---         {
 ---             ["x"]         = {207, 207.5, 315.2, 315.29, 207.5844},
@@ -383,6 +468,8 @@ function app.getTexts(type) end
 ---             ["fill"]      = -1,
 ---             ["lineStyle"] = "plain",
 ---             ["ref"] = userdata: 0x5f644c02d440
+---             ["page"] = 2,
+---             ["layer"] = 1,
 ---         },
 ---         {
 ---             ["x"]         = {387.60, 387.6042, 500.879, 500.87, 387.604},
@@ -393,6 +480,8 @@ function app.getTexts(type) end
 ---             ["fill"]      = -1,
 ---             ["lineStyle"] = "plain",
 ---             ["ref"] = userdata: 0x5f644c0700d0
+---             ["page"] = 2,
+---             ["layer"] = 2,
 ---         },
 --- }
 function app.getStrokes(type) end
@@ -514,7 +603,7 @@ function app.changeBackgroundPdfPageNr(pageNr, relative) end
 --- 
 --- See /src/control/ToolEnums.cpp for possible values of "size".
 --- 
---- for seiection:
+--- for selection:
 --- {
 ---   -- bounding box as drawn in the UI (includes padding on all sides)
 ---   "boundingBox" = {
@@ -628,18 +717,34 @@ function app.getDocumentStructure() end
 --- scrolls to page 10 (absolute mode)
 function app.scrollToPage(page, relative) end
 
---- Scrolls to the position on the selected page specified relatively (by default) or absolutely
+--- Scrolls to the position relatively (by default) or absolutely (whole layout)
 --- 
 --- @param x number
 --- @param y number
 --- @param relative boolean
 --- 
 --- Example 1: app.scrollToPos(20,10)
---- scrolls 20pt right and 10pt down (relative mode)
+--- scrolls 20 pixel right and 10 pixel down from current position (relative mode)
 --- 
 --- Example 2: app.scrollToPos(200, 50, false)
---- scrolls to page position 200pt right and 50pt down from the left page corner  (absolute mode)
+--- scrolls to absolute pixel coordinates (200, 50) from top left corner of the layout (absolute mode)
 function app.scrollToPos(x, y, relative) end
+
+--- Obtains the current absolute scroll position (position on the whole layout) and width and height of the currently
+--- visible window, measured in pixels.
+--- 
+--- @return {x:number, y:number, width:number, height:number}
+--- 
+--- Example: local scrollPos = app.getScrollPos()
+--- 
+--- return value:
+--- {
+---     ["x"] = number,
+---     ["y"] = number,
+---     ["width"] = number,
+---     ["height"] = number,
+--- }
+function app.getScrollPos() end
 
 --- Obtains the label of the specified page in the pdf background.
 --- 
@@ -735,7 +840,7 @@ function app.setZoom(zoom) end
 
 --- Exports the current document as a pdf or as a svg or png image
 --- 
---- @param opts {outputFile:string, range:string, background:string, progressiveMode: boolean}
+--- @param opts {outputFile:string, range:string, background:string, progressiveMode: boolean, backend: string}
 --- 
 --- Example 1:
 --- app.export({["outputFile"] = "Test.pdf", ["range"] = "2-5; 7", ["background"] = "none", ["progressiveMode"] = true})
@@ -747,6 +852,10 @@ function app.setZoom(zoom) end
 --- 
 --- Example 3:
 --- app.export({["outputFile"] = "Test.png", ["layerRange"] = "1-2", ["background"] = "all", ["pngWidth"] = 800})
+--- 
+--- Example 4:
+--- app.export({["outputFile"] = "Test.pdf", ["backend"] = "cairo"})
+--- uses the cairo backend for the PDF export, which has a proper support for cropped pages.
 function app.export(opts) end
 
 --- Opens a file and by default asks the user what to do with the old document.
@@ -809,14 +918,18 @@ function app.openFile(path, pageNr, oldDocument) end
 --- maxWidth=400}}}
 function app.addImages(opts) end
 
---- Puts a Lua Table of the Images (from the selection tool / selected layer) onto the stack.
+--- Puts a Lua Table of the Images (from the selection tool / selected layer / selected page / all document) onto the
+--- stack. When called with "page" to retrieve all elements on the current page, it also adds a field "layer" for
+--- the layer containing the element, and when called with "all" it additionally adds a field "page" containing its page
+--- index together with its layer (all of them being indexed from 1).
+--- 
 --- Is inverse to app.addImages
 --- 
---- @param type string "selection" or "layer"
+--- @param type string "selection" or "layer" or "page" or "all"
 --- @return {x:number, y:number, width:number, height:number, data:string, format:string, imageWidth:number,
---- imageHeight:number, ref:lightuserdata}[] images
+--- imageHeight:number, ref:lightuserdata, page:number|nil, layer:number|nil}[] images
 --- 
---- Required argument: type ("selection" or "layer")
+--- Required argument: type ("selection" or "layer" or "page" or "all")
 --- 
 --- Example: local images = app.getImages("selection")
 --- 
@@ -832,6 +945,8 @@ function app.addImages(opts) end
 ---         ["imageWidth"] = integer,
 ---         ["imageHeight"] = integer,
 ---         ["ref"] = userdata: 0x5f644c0700d0
+---         ["page"] = 1, -- Only present when called with "all"
+---         ["layer"] = 1, -- Only present when called with "all" or "page"
 ---     },
 ---     {
 ---         ...
@@ -893,3 +1008,202 @@ function app.registerPlaceholder(id, description) end
 --- Updates the toolbar placeholder with the given value.
 function app.setPlaceholderValue(id, value) end
 
+--- Get list of available font families on the system
+--- 
+--- @return table: A table containing:
+---                - families: array of font family names
+---                - current: index of the currently selected font (or nil if not found)
+--- 
+--- Example:
+---   local fonts = app.getFonts()
+---   for i, family in ipairs(fonts.families) do
+---       print(i, family)
+---   end
+---   print("Current font index:", fonts.current)
+function app.getFonts() end
+
+--- Get the current font for text tool
+--- 
+--- @return table: A table with 'name' and 'size' fields representing the current font
+--- 
+--- Example:
+---   local font = app.getFont()
+---   print(font.name)  -- "Arial"
+---   print(font.size)  -- 12
+function app.getFont() end
+
+--- Set the current font for text tool
+--- 
+--- @param font string|table: Either a Pango-style font description string (e.g., "Arial 12")
+---                           or a table with 'name' and/or 'size' fields
+--- 
+--- The font family name is validated against the system's available fonts.
+--- If the font is not available, an error is raised.
+--- 
+--- Examples:
+---   app.setFont("Arial 12")
+---   app.setFont({name = "Arial", size = 12})
+---   app.setFont({name = "Arial"})  -- Only change font name
+---   app.setFont({size = 14})       -- Only change font size
+function app.setFont(font) end
+
+---@alias Action
+---| "new-file"
+---| "open"
+---| "annotate-pdf"
+---| "save"
+---| "save-as"
+---| "export-as-pdf"
+---| "export-as"
+---| "print"
+---| "quit"
+---| "arrange-selection-order"
+---| "undo"
+---| "redo"
+---| "cut"
+---| "copy"
+---| "paste"
+---| "search"
+---| "select-all"
+---| "delete"
+---| "move-selection-layer-up"
+---| "move-selection-layer-down"
+---| "rotation-snapping"
+---| "grid-snapping"
+---| "preferences"
+---| "paired-pages-mode"
+---| "paired-pages-offset"
+---| "presentation-mode"
+---| "fullscreen"
+---| "show-sidebar"
+---| "show-toolbar"
+---| "set-layout-vertical"
+---| "set-layout-right-to-left"
+---| "set-layout-bottom-to-top"
+---| "set-columns-or-rows"
+---| "manage-toolbar"
+---| "customize-toolbar"
+---| "show-menubar"
+---| "zoom-in"
+---| "zoom-out"
+---| "zoom-100"
+---| "zoom-fit"
+---| "zoom"
+---| "goto-first"
+---| "goto-previous"
+---| "goto-page"
+---| "goto-next"
+---| "goto-last"
+---| "goto-next-annotated-page"
+---| "goto-previous-annotated-page"
+---| "navigate-back"
+---| "navigate-forward"
+---| "new-page-before"
+---| "new-page-after"
+---| "new-page-at-end"
+---| "duplicate-page"
+---| "move-page-towards-beginning"
+---| "move-page-towards-end"
+---| "append-new-pdf-pages"
+---| "configure-page-template"
+---| "delete-page"
+---| "paper-format"
+---| "paper-background-color"
+---| "select-tool"
+---| "select-default-tool"
+---| "tool-draw-shape-recognizer"
+---| "tool-draw-rectangle"
+---| "tool-draw-ellipse"
+---| "tool-draw-arrow"
+---| "tool-draw-double-arrow"
+---| "tool-draw-coordinate-system"
+---| "tool-draw-line"
+---| "tool-draw-spline"
+---| "setsquare"
+---| "compass"
+---| "tool-pen-size"
+---| "tool-pen-line-style"
+---| "tool-pen-fill"
+---| "tool-pen-fill-opacity"
+---| "tool-eraser-size"
+---| "tool-eraser-type"
+---| "tool-highlighter-size"
+---| "tool-highlighter-fill"
+---| "tool-highlighter-fill-opacity"
+---| "tool-select-pdf-text-marker-opacity"
+---| "toggle-touch-drawing"
+---| "audio-record"
+---| "audio-pause-playback"
+---| "audio-stop-playback"
+---| "audio-seek-forwards"
+---| "audio-seek-backwards"
+---| "select-font"
+---| "font"
+---| "tex"
+---| "plugin-manager"
+---| "help"
+---| "demo"
+---| "about"
+---| "tool-size"
+---| "tool-fill"
+---| "tool-fill-opacity"
+---| "tool-color"
+---| "select-color"
+---| "layer-show-all"
+---| "layer-hide-all"
+---| "layer-new-above-current"
+---| "layer-new-below-current"
+---| "layer-copy"
+---| "layer-move-up"
+---| "layer-move-down"
+---| "layer-delete"
+---| "layer-merge-down"
+---| "layer-rename"
+---| "layer-goto-next"
+---| "layer-goto-previous"
+---| "layer-goto-top"
+---| "layer-active"
+---| "position-highlighting"
+
+---@enum
+app.C = {
+    ToolSize_veryThin = 0,
+    ToolSize_thin = 1,
+    ToolSize_medium = 2,
+    ToolSize_thick = 3,
+    ToolSize_veryThick = 4,
+    ToolSize_none = 5,
+    Tool_none = 0,
+    Tool_pen = 1,
+    Tool_eraser = 2,
+    Tool_highlighter = 3,
+    Tool_text = 4,
+    Tool_image = 5,
+    Tool_selectRect = 6,
+    Tool_selectRegion = 7,
+    Tool_selectMultiLayerRect = 8,
+    Tool_selectMultiLayerRegion = 9,
+    Tool_selectObject = 10,
+    Tool_playObject = 11,
+    Tool_verticalSpace = 12,
+    Tool_hand = 13,
+    Tool_drawRect = 14,
+    Tool_drawEllipse = 15,
+    Tool_drawArrow = 16,
+    Tool_drawDoubleArrow = 17,
+    Tool_drawCoordinateSystem = 18,
+    Tool_showFloatingToolbox = 19,
+    Tool_drawSpline = 20,
+    Tool_selectPdfTextLinear = 21,
+    Tool_selectPdfTextRect = 22,
+    Tool_laserPointerPen = 23,
+    Tool_laserPointerHighlighter = 24,
+    EraserType_none = 0,
+    EraserType_default = 1,
+    EraserType_whiteout = 2,
+    EraserType_deleteStroke = 3,
+    OrderChange_bringToFront = 0,
+    OrderChange_bringForward = 1,
+    OrderChange_sendBackward = 2,
+    OrderChange_sendToBack = 3,
+}

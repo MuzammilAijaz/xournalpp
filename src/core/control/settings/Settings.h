@@ -28,12 +28,13 @@
 #include "model/Font.h"                          // for XojFont
 #include "util/Color.h"                          // for Color
 
-#include "LatexSettings.h"      // for LatexSettings
-#include "RecolorParameters.h"  // for RecolorParameters
-#include "SettingsEnums.h"      // for InputDeviceTypeOption
-#include "ViewModes.h"          // for ViewModes
-#include "config-features.h"    // for ENABLE_AUDIO
-#include "filesystem.h"         // for path
+#include "LatexSettings.h"         // for LatexSettings
+#include "PageTemplateSettings.h"  // for PageTemplateSettings
+#include "RecolorParameters.h"     // for RecolorParameters
+#include "SettingsEnums.h"         // for InputDeviceTypeOption
+#include "ViewModes.h"             // for ViewModes
+#include "config-features.h"       // for ENABLE_AUDIO
+#include "filesystem.h"            // for path
 
 #ifdef ENABLE_AUDIO
 #include <portaudiocpp/PortAudioCpp.hxx>  // for PaDeviceIndex
@@ -46,6 +47,7 @@ constexpr unsigned int MAX_SPACES_FOR_TAB = 8U;
 
 class ButtonConfig;
 class InputDevice;
+class PageTemplateSettings;
 
 class SAttribute {
 public:
@@ -241,6 +243,9 @@ public:
     void setShowPairedPages(bool showPairedPages);
     bool isShowPairedPages() const;
 
+    void setShowPageShadow(bool showPageShadow);
+    bool isShowPageShadow() const;
+
     void setPresentationMode(bool presentationMode);
     bool isPresentationMode() const;
 
@@ -364,11 +369,11 @@ public:
     bool isAudioDisabled() const;
     void setAudioDisabled(bool disable);
 
-    std::string const& getDefaultSaveName() const;
-    void setDefaultSaveName(const std::string& name);
+    std::u8string const& getDefaultSaveName() const;
+    void setDefaultSaveName(const std::u8string& name);
 
-    std::string const& getDefaultPdfExportName() const;
-    void setDefaultPdfExportName(const std::string& name);
+    std::u8string const& getDefaultPdfExportName() const;
+    void setDefaultPdfExportName(const std::u8string& name);
 
     ButtonConfig* getButtonConfig(unsigned int id);
 
@@ -408,8 +413,8 @@ public:
     bool isEagerPageCleanup() const;
     void setEagerPageCleanup(bool b);
 
-    std::string const& getPageTemplate() const;
-    void setPageTemplate(const std::string& pageTemplate);
+    PageTemplateSettings const& getPageTemplateSettings() const;
+    void setPageTemplateSettings(const PageTemplateSettings& pageTemplateSettings);
 
 #ifdef ENABLE_AUDIO
     fs::path const& getAudioFolder() const;
@@ -829,6 +834,11 @@ private:
     bool showPairedPages{};
 
     /**
+     *  Show shadow behind pages
+     */
+    bool showPageShadow{};
+
+    /**
      *  Sets presentation mode
      */
     bool presentationMode{};
@@ -952,9 +962,9 @@ private:
     /**
      * Default name if you save a new document
      */
-    std::string defaultSaveName;  // should be string - don't change to path
+    std::u8string defaultSaveName;  // should be string - don't change to path
 
-    std::string defaultPdfExportName;
+    std::u8string defaultPdfExportName;
 
     /**
      * The button config
@@ -1013,9 +1023,9 @@ private:
     RecolorParameters recolorParameters{};
 
     /**
-     * Page template String
+     * Page template (format, background, color...)
      */
-    std::string pageTemplate;
+    PageTemplateSettings pageTemplateSettings;
 
     /**
      * Unit, see XOJ_UNITS

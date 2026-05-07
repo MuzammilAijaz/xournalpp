@@ -5,11 +5,13 @@
 #include <fstream>      // for ifstream, char_traits, basic_ist...
 #include <iterator>     // for begin
 #include <sstream>      // for stringstream
+#include <stdexcept>    // for runtime_error
 #include <string_view>  // for basic_string_view, operator""sv
 #include <type_traits>  // for remove_reference<>::type
 #include <utility>      // for move
+#include <variant>
 
-#include <config-paths.h>  // for PACKAGE_DATA_DIR
+#include <config-paths.h>  // for PROJECT_INSTALL_DIR
 #include <glib.h>          // for gchar, g_free, g_filename_to_uri
 
 #include "util/PlaceholderString.h"  // for PlaceholderString
@@ -17,7 +19,9 @@
 #include "util/Util.h"               // for getPid, execInUiThread
 #include "util/XojMsgBox.h"          // for XojMsgBox
 #include "util/i18n.h"               // for FS, _F, FORMAT_STR
-#include "util/safe_casts.h"         // for as_signed
+#include "util/raii/CStringWrapper.h"
+#include "util/safe_casts.h"  // for as_signed
+#include "util/utf8_view.h"   // for utf8_view
 
 #include "config.h"  // for PROJECT_NAME
 
@@ -62,8 +66,8 @@ auto Util::getLongPath(const fs::path& path) -> fs::path { return path; }
 
 #ifdef _WIN32
 fs::path Util::getExePath() {
-    char szFileName[MAX_PATH + 1];
-    GetModuleFileNameA(nullptr, szFileName, MAX_PATH + 1);
+    wchar_t szFileName[MAX_PATH + 1];
+    GetModuleFileNameW(nullptr, szFileName, MAX_PATH + 1);
 
     return fs::path{szFileName}.parent_path();
 }
@@ -117,11 +121,16 @@ auto Util::readString(fs::path const& path, bool showErrorToUser, std::ios_base:
     try {
         std::stringstream buffer;
         std::ifstream ifs{path, openmode};
+        if (!ifs) {
+            throw std::runtime_error{FS(_F("Could not open file: {1}") % std::strerror(errno))};
+        }
+        ifs.exceptions(std::ios::failbit | std::ios::badbit);
         buffer << ifs.rdbuf();
         return buffer.str();
-    } catch (const fs::filesystem_error& e) {
+    } catch (const std::exception& e) {
         if (showErrorToUser) {
-            XojMsgBox::showErrorToUser(nullptr, e.what());
+            const auto msg = FS(_F("Error reading \"{1}\":\n{2}") % path.u8string() % e.what());
+            XojMsgBox::showErrorToUser(nullptr, msg);
         }
     }
     return std::nullopt;
@@ -179,29 +188,86 @@ auto Util::clearExtensions(fs::path& path, const std::string& ext) -> void {
     }
 }
 
+Util::GFilename::GFilename(const fs::path& p) {
+#ifndef _WIN32  // On Windows, g_filename are always in UTF8
+    if (!g_get_filename_charsets(nullptr)) {
+        // g_filename are NOT utf-8 encoded
+        GError* err = nullptr;
+        value = xoj::util::OwnedCString::assumeOwnership(
+                g_filename_from_utf8(char_cast(p.u8string().c_str()), -1, nullptr, nullptr, &err));
+        if (err) {
+            g_warning("Failed to convert g_filename from utf8 with error code: %d\n%s", err->code, err->message);
+            g_error_free(err);
+            value = u8"";
+        }
+    } else
+#endif
+    {
+        value = p.u8string();
+    }
+}
+
+Util::GFilename::GFilename(const char* p): value(p) {}
+
+auto Util::GFilename::assumeOwnerhip(char* p) -> GFilename {
+    GFilename f;
+    f.value = xoj::util::OwnedCString::assumeOwnership(p);
+    return f;
+}
+const char* Util::GFilename::c_str() const {
+    if (const auto* p = get_if<xoj::util::OwnedCString>(&value); p) {
+        return p->get();
+    } else if (const auto* q = get_if<const char*>(&value); q) {
+        return *q;
+    }
+    return char_cast(get<std::u8string>(value).c_str());
+}
+
+std::optional<fs::path> Util::GFilename::toPath() const {
+#ifndef _WIN32  // On Windows, g_filename are always in UTF8
+    if (!g_get_filename_charsets(nullptr)) {
+        // g_filename are NOT utf-8 encoded
+        GError* err = nullptr;
+        auto utf8 =
+                xoj::util::OwnedCString::assumeOwnership(g_filename_to_utf8(this->c_str(), -1, nullptr, nullptr, &err));
+        if (err) {
+            g_warning("Failed to convert g_filename to utf8 with error code: %d\n%s", err->code, err->message);
+            g_error_free(err);
+            return std::nullopt;
+        }
+        if (utf8) {
+            return fs::path(xoj::util::utf8(utf8.get()));
+        } else {
+            // Conversion failed?
+            g_warning("Failed to convert g_filename to utf8: the resulting string is empty");
+            return std::nullopt;
+        }
+    } else
+#endif
+    {
+        if (const char* p = this->c_str(); p) {
+            return fs::path(xoj::util::utf8(p));
+        } else {
+            return std::nullopt;
+        }
+    }
+}
+
 // Uri must be ASCII-encoded!
 auto Util::fromUri(const std::string& uri) -> std::optional<fs::path> {
     if (!StringUtils::startsWith(uri, "file://")) {
         return std::nullopt;
     }
-
-    gchar* filename = g_filename_from_uri(uri.c_str(), nullptr, nullptr);
-    if (filename == nullptr) {
-        return std::nullopt;
-    }
-    auto p = fs::u8path(filename);
-    g_free(filename);
-
-    return {std::move(p)};
+    return GFilename::assumeOwnerhip(g_filename_from_uri(uri.c_str(), nullptr, nullptr)).toPath();
 }
 
 auto Util::toUri(const fs::path& path) -> std::optional<std::string> {
     GError* error{};
     char* uri = [&] {
         if (isAbsolute(path)) {
-            return g_filename_to_uri(path.u8string().c_str(), nullptr, &error);
+            return g_filename_to_uri(GFilename(path).c_str(), nullptr, &error);
         }
-        return g_filename_to_uri(fs::absolute(path).u8string().c_str(), nullptr, &error);
+        return g_filename_to_uri(GFilename(fs::absolute(path)).c_str(), nullptr, &error);
     }();
 
     if (error != nullptr) {
@@ -221,87 +287,38 @@ auto Util::toUri(const fs::path& path) -> std::optional<std::string> {
 }
 
 auto Util::fromGFile(GFile* file) -> fs::path {
-    char* p = g_file_get_path(file);
-    auto ret = p ? fs::u8path(p) : fs::path{};
-    g_free(p);
-    return ret;
+    return GFilename(g_file_peek_path(file)).toPath().value_or(fs::path());
 }
 
 auto Util::toGFile(fs::path const& path) -> xoj::util::GObjectSPtr<GFile> {
-    return xoj::util::GObjectSPtr<GFile>(g_file_new_for_path(path.u8string().c_str()), xoj::util::adopt);
+    return xoj::util::GObjectSPtr<GFile>(g_file_new_for_path(GFilename(path).c_str()), xoj::util::adopt);
 }
 
-auto Util::fromGFilename(const char* path) -> fs::path {
-    if (path == nullptr) {
-        return {};
-    }
-    gsize pSize{0};
-    GError* err{};
-    auto* u8Path = g_filename_to_utf8(path, as_signed(std::strlen(path)), nullptr, &pSize, &err);
-    if (err) {
-        g_message("Failed to convert g_filename to utf8 with error code: %d\n%s", err->code, err->message);
-        g_error_free(err);
-        return {};
-    }
-    auto ret = fs::u8path(u8Path, u8Path + pSize);
-    g_free(u8Path);
-    return ret;
-}
+auto Util::fromGFilename(const char* path) -> fs::path { return GFilename(path).toPath().value_or(fs::path()); }
 
-auto Util::toGFilename(fs::path const& path) -> std::string {
-    auto u8path = path.u8string();
-    gsize pSize{0};
-    GError* err{};
-    auto* local = g_filename_from_utf8(u8path.c_str(), as_signed(u8path.size()), nullptr, &pSize, &err);
-    if (err) {
-        g_message("Failed to convert g_filename from utf8 with error code: %d\n%s", err->code, err->message);
-        g_error_free(err);
-        return {};
-    }
-    auto ret = std::string{local, pSize};
-    g_free(local);
-    return ret;
-}
-
-
-void Util::openFileWithDefaultApplication(const fs::path& filename) {
-#ifdef __APPLE__
-    constexpr auto const OPEN_PATTERN = "open \"{1}\"";
-#elif _WIN32  // note the underscore: without it, it's not msdn official!
-    constexpr auto const OPEN_PATTERN = "start \"\" \"{1}\"";
-    /**
-     * start command requires a (possibly empty) title when there are quotes around the command
-     * https://stackoverflow.com/questions/27261692/how-do-i-use-quotes-in-cmd-start
-     */
-#else         // linux, unix, ...
-    constexpr auto const OPEN_PATTERN = "xdg-open \"{1}\"";
-#endif
-
-    std::string command = FS(FORMAT_STR(OPEN_PATTERN) % Util::getEscapedPath(filename));
-    if (system(command.c_str()) != 0) {
-        std::string msg = FS(_F("File couldn't be opened. You have to do it manually:\n"
-                                "URL: {1}") %
-                             filename.u8string());
-        XojMsgBox::showErrorToUser(nullptr, msg);
-    }
-}
+auto Util::toGFilename(fs::path const& path) -> GFilename { return GFilename(path); }
 
 auto Util::getGettextFilepath(fs::path const& localeDir) -> fs::path {
     /// documentation of g_getenv is wrong, its UTF-8, see #5640
     const char* gettextEnv = g_getenv("TEXTDOMAINDIR");
-    // Only consider first path in environment variable
-    std::string_view directories;
-    if (gettextEnv) {
-        directories = gettextEnv;
-        size_t firstDot = directories.find(G_SEARCHPATH_SEPARATOR);
-        if (firstDot != std::string::npos) {
-            directories = directories.substr(0, firstDot);
+
+    auto dir = [&]() -> std::optional<fs::path> {
+        if (gettextEnv) {
+            // Only consider first path in environment variable
+            std::string_view directories(gettextEnv);
+            size_t firstDot = directories.find(G_SEARCHPATH_SEPARATOR);
+            if (firstDot != std::string::npos) {
+                return GFilename::assumeOwnerhip(g_strndup(gettextEnv, firstDot)).toPath();
+            } else {
+                return GFilename(gettextEnv).toPath();
+            }
+        } else {
+            return std::nullopt;
         }
-    }
-    auto dir = (gettextEnv) ? fs::u8path(directories) : localeDir;
+    }();
     g_debug("TEXTDOMAINDIR = %s, Platform-specific locale dir = %s, chosen directory = %s", gettextEnv,
-            localeDir.string().c_str(), dir.string().c_str());
-    return dir;
+            localeDir.string().c_str(), dir.value_or(localeDir).string().c_str());
+    return dir.value_or(localeDir);
 }
 
 auto Util::getAutosaveFilepath() -> fs::path {
@@ -311,7 +328,7 @@ auto Util::getAutosaveFilepath() -> fs::path {
 }
 
 auto Util::getConfigFolder() -> fs::path {
-    auto p = fs::u8path(g_get_user_config_dir());
+    auto p = GFilename(g_get_user_config_dir()).toPath().value_or(fs::path());
     return (p /= CONFIG_FOLDER_NAME);
 }
 
@@ -323,7 +340,7 @@ auto Util::getConfigSubfolder(const fs::path& subfolder) -> fs::path {
 }
 
 auto Util::getCacheSubfolder(const fs::path& subfolder) -> fs::path {
-    auto p = fs::u8path(g_get_user_cache_dir());
+    auto p = GFilename(g_get_user_cache_dir()).toPath().value_or(fs::path());
     p /= CONFIG_FOLDER_NAME;
     p /= subfolder;
 
@@ -331,7 +348,7 @@ auto Util::getCacheSubfolder(const fs::path& subfolder) -> fs::path {
 }
 
 auto Util::getDataSubfolder(const fs::path& subfolder) -> fs::path {
-    auto p = fs::u8path(g_get_user_data_dir());
+    auto p = GFilename(g_get_user_data_dir()).toPath().value_or(fs::path());
     p /= CONFIG_FOLDER_NAME;
     p /= subfolder;
 
@@ -340,17 +357,17 @@ auto Util::getDataSubfolder(const fs::path& subfolder) -> fs::path {
 
 static auto buildUserStateDir() -> fs::path {
 #if _WIN32
-    // Windows: state directory is same as data directory
-    return fs::u8path(g_get_user_data_dir());
+    // Windows: state directory is same as data directory (and the path is necessarily in utf-8)
+    return fs::path(xoj::util::utf8(g_get_user_data_dir()));
 #else
     // Unix: $XDG_STATE_HOME or ~/.local/state
     const char* xdgStateHome = std::getenv("XDG_STATE_HOME");
     if (xdgStateHome && xdgStateHome[0]) {
         // environment variable exists and is non-empty
-        return fs::u8path(xdgStateHome);
+        return Util::GFilename(xdgStateHome).toPath().value_or(fs::path());
     }
 
-    auto path = fs::u8path(g_get_home_dir());
+    auto path = Util::GFilename(g_get_home_dir()).toPath().value_or(fs::path());
     return path / ".local/state";
 #endif
 }
@@ -388,7 +405,7 @@ auto Util::getCacheFile(const fs::path& relativeFileName) -> fs::path {
 }
 
 auto Util::getTmpDirSubfolder(const fs::path& subfolder) -> fs::path {
-    auto p = fs::u8path(g_get_tmp_dir());
+    auto p = GFilename(g_get_tmp_dir()).toPath().value_or(fs::path());
     p /= FS(_F("xournalpp-{1}") % Util::getPid());
     p /= subfolder;
     return Util::ensureFolderExists(p);
@@ -404,7 +421,7 @@ auto Util::ensureFolderExists(const fs::path& p) -> fs::path {
     return p;
 }
 
-auto Util::normalizeAssetPath(const fs::path& asset, const fs::path& base, PathStorageMode mode) -> std::string {
+auto Util::normalizeAssetPath(const fs::path& asset, const fs::path& base, PathStorageMode mode) -> std::u8string {
     try {
         if (mode == PathStorageMode::AS_RELATIVE_PATH) {
             fs::path basenormal = base.empty() ? fs::current_path() : fs::absolute(base).lexically_normal();
@@ -414,7 +431,8 @@ auto Util::normalizeAssetPath(const fs::path& asset, const fs::path& base, PathS
             return fs::absolute(asset).lexically_normal().generic_u8string();
         }
     } catch (const fs::filesystem_error& fe) {
-        g_warning("Could not normalize path: %s\nFailed with error: %s", asset.u8string().c_str(), fe.what());
+        g_warning("Could not normalize path: %s\nFailed with error: %s", char_cast(asset.u8string().c_str()),
+                  fe.what());
         return asset.generic_u8string();
     }
 }
@@ -455,7 +473,7 @@ bool Util::safeRenameFile(fs::path const& from, fs::path const& to) {
         // Attempt copy and delete
         g_warning("Renaming file %s to %s failed with %s. This may happen when source and target are on different "
                   "filesystems. Attempt to copy the file.",
-                  fe.path1().string().c_str(), fe.path2().string().c_str(), fe.what());
+                  char_cast(fe.path1().u8string().c_str()), char_cast(fe.path2().u8string().c_str()), fe.what());
         fs::copy_file(from, to, fs::copy_options::overwrite_existing);
         fs::remove(from);
     }
@@ -466,33 +484,20 @@ void Util::safeReplaceExtension(fs::path& p, const char* newExtension) {
     try {
         p.replace_extension(newExtension);
     } catch (const fs::filesystem_error& fe) {
-        g_warning("Could not replace extension of file \"%s\"! Failed with %s", p.u8string().c_str(), fe.what());
+        g_warning("Could not replace extension of file \"%s\"! Failed with %s", char_cast(p.u8string().c_str()),
+                  fe.what());
     }
 }
 
 auto Util::getDataPath() -> fs::path {
-#ifdef _WIN32
-    TCHAR szFileName[MAX_PATH];
-    GetModuleFileName(nullptr, szFileName, MAX_PATH);
-    auto exePath = std::string(szFileName);
-    std::string::size_type pos = exePath.find_last_of("\\/");
-    fs::path p = exePath.substr(0, pos);
-    p = p / ".." / "share" / PROJECT_NAME;
-    return p;
-#elif defined(__APPLE__)
+#if defined(__APPLE__)
     fs::path p = getExePath().parent_path();
     if (fs::exists(p / "Resources")) {
-        p = p / "Resources";
-    } else {
-        p = PACKAGE_DATA_DIR;
-        p /= PROJECT_NAME;
+        return p / "Resources";
     }
-    return p;
-#else
-    fs::path p = PACKAGE_DATA_DIR;
-    p /= PROJECT_NAME;
-    return p;
 #endif
+
+    return getExePath().parent_path() / "share" / PROJECT_NAME;
 }
 
 auto Util::getLocalePath() -> fs::path {
@@ -503,7 +508,12 @@ auto Util::getLocalePath() -> fs::path {
     }
 #endif
 
-    return getDataPath() / ".." / "locale";
+    return getDataPath().parent_path() / "locale";
+}
+
+auto Util::getInstallUiPath() -> fs::path {
+    fs::path p = PROJECT_INSTALL_DIR;
+    return p / "share" / PROJECT_NAME / "ui";
 }
 
 auto Util::getBuiltInPaletteDirectoryPath() -> fs::path { return getDataPath() / "palettes"; }
@@ -513,7 +523,7 @@ auto Util::getCustomPaletteDirectoryPath() -> fs::path { return getConfigSubfold
 auto Util::listFilesSorted(fs::path directory) -> std::vector<fs::path> {
     std::vector<fs::path> filePaths{};
     if (!exists(directory)) {
-        g_warning("Directory %s does not exist.", directory.u8string().c_str());
+        g_warning("Directory %s does not exist.", char_cast(directory.u8string().c_str()));
         return filePaths;
     }
 

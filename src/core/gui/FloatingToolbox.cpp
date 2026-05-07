@@ -15,6 +15,7 @@
 
 #include "MainWindow.h"          // for MainWindow
 #include "ToolbarDefinitions.h"  // for ToolbarEntryDefintion
+#include "XournalView.h"
 
 
 FloatingToolbox::FloatingToolbox(MainWindow* theMainWindow, GtkOverlay* overlay) {
@@ -86,13 +87,7 @@ auto FloatingToolbox::hasWidgets() -> bool {
 
 
 void FloatingToolbox::showForConfiguration() {
-    if (this->floatingToolboxActivated())  // Do not show if not being used - at least while experimental.
-    {
-        GtkWidget* boxContents = this->mainWindow->get("boxContents");
-        gint wx = 0, wy = 0;
-        gtk_widget_translate_coordinates(boxContents, gtk_widget_get_toplevel(boxContents), 0, 0, &wx, &wy);
-        this->floatingToolboxX = wx + 40;  // when configuration state these are
-        this->floatingToolboxY = wy + 40;  // topleft coordinates( otherwise center).
+    if (this->floatingToolboxActivated()) {
         this->floatingToolboxState = configuration;
         this->show();
     }
@@ -131,39 +126,58 @@ void FloatingToolbox::flagRecalculateSizeRequired() { this->floatingToolboxState
  */
 auto FloatingToolbox::getOverlayPosition(GtkOverlay* overlay, GtkWidget* widget, GdkRectangle* allocation,
                                          FloatingToolbox* self) -> bool {
-    if (widget == self->floatingToolbox) {
-        gtk_widget_get_allocation(widget, allocation);  // get existing width and height
-
-        if (self->floatingToolboxState != noChange ||
-            allocation->height < 2)  // if recalcSize or configuration or  initiation.
-        {
-            GtkRequisition natural;
-            gtk_widget_get_preferred_size(widget, nullptr, &natural);
-            allocation->width = natural.width;
-            allocation->height = natural.height;
-        }
-
-        switch (self->floatingToolboxState) {
-            case recalcSize:  // fallthrough 		note: recalc done above
-            case noChange:
-                // show centered on x,y
-                allocation->x = self->floatingToolboxX - allocation->width / 2;
-                allocation->y = self->floatingToolboxY - allocation->height / 2;
-                self->floatingToolboxState = noChange;
-                break;
-
-            case configuration:
-                allocation->x = self->floatingToolboxX;
-                allocation->y = self->floatingToolboxY;
-                allocation->width = std::max(allocation->width + 32, 50);  // always room for one more...
-                allocation->height = std::max(allocation->height, 50);
-                break;
-        }
-
-        return true;
+    if (widget != self->floatingToolbox) {
+        return false;
     }
 
-    return false;
+    gtk_widget_get_allocation(widget, allocation);
+
+    if (self->floatingToolboxState != noChange || allocation->height < 2) {
+        GtkRequisition natural;
+        gtk_widget_get_preferred_size(widget, nullptr, &natural);
+        allocation->width = natural.width;
+        allocation->height = natural.height;
+    }
+
+    GtkWidget* scrolledWindow =
+            gtk_widget_get_ancestor(self->mainWindow->getXournal()->getWidget(), GTK_TYPE_SCROLLED_WINDOW);
+
+    switch (self->floatingToolboxState) {
+        case recalcSize:
+            [[fallthrough]];
+        case noChange: {
+            int centerX = self->floatingToolboxX - allocation->width / 2;
+            int centerY = self->floatingToolboxY - allocation->height / 2;
+
+            // Clamp to scrolled window bounds with margin
+            constexpr int margin = 10;
+            int minX = margin;
+            int maxX = gtk_widget_get_allocated_width(scrolledWindow) - allocation->width - margin;
+            int minY = margin;
+            int maxY = gtk_widget_get_allocated_height(scrolledWindow) - allocation->height - margin;
+
+            // Ensure valid clamp bounds when toolbox is larger than viewport
+            maxX = std::max(maxX, minX);
+            maxY = std::max(maxY, minY);
+
+            allocation->x = std::clamp(centerX, minX, maxX);
+            allocation->y = std::clamp(centerY, minY, maxY);
+            self->floatingToolboxState = noChange;
+            break;
+        }
+
+        case configuration:
+            allocation->x = 40;
+            allocation->y = 40;
+            allocation->width = std::max(allocation->width + 32, 50);
+            allocation->height = std::max(allocation->height, 50);
+            break;
+    }
+
+    gtk_widget_translate_coordinates(scrolledWindow, GTK_WIDGET(overlay), allocation->x, allocation->y, &allocation->x,
+                                     &allocation->y);
+
+    return true;
 }
 
 

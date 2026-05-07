@@ -183,8 +183,7 @@ void XojMsgBox::replaceFileQuestion(GtkWindow* win, fs::path file,
 
     GtkWidget* dialog = gtk_message_dialog_new(
             win, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE, "%s",
-            FS(FORMAT_STR("The file {1} already exists! Do you want to replace it?") % file.filename().u8string())
-                    .c_str());
+            FS(_F("The file {1} already exists! Do you want to replace it?") % file.filename().u8string()).c_str());
     if (win != nullptr) {
         gtk_window_set_transient_for(GTK_WINDOW(dialog), win);
     }
@@ -206,12 +205,12 @@ void XojMsgBox::showHelp(GtkWindow* win) { openURL(win, XOJ_HELP); }
 
 void XojMsgBox::openURL(GtkWindow* win, const char* url) {
 #ifdef _WIN32
-    // gvfs is not in MSYS repositories, so we can't use gtk_show_uri.
+    // gvfs is not in MSYS repositories, so we can't use gtk_show_uri_on_window.
     // Instead, we use the native API.
     ShellExecute(nullptr, "open", url, nullptr, nullptr, SW_SHOW);
 #else
     GError* error = nullptr;
-    gtk_show_uri(gtk_window_get_screen(win), url, gtk_get_current_event_time(), &error);
+    gtk_show_uri_on_window(win, url, gtk_get_current_event_time(), &error);
 
     if (error) {
         std::string msg = FS(_F("Unable to open the link: {1}\n{2}") % url % error->message);

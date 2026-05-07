@@ -16,18 +16,21 @@
 #include "control/DeviceListHelper.h"               // for InputDevice
 #include "control/ToolEnums.h"                      // for ERASER_TYPE_NONE
 #include "control/settings/LatexSettings.h"         // for LatexSettings
+#include "control/settings/PageTemplateSettings.h"  // for PageTemplateSettings
 #include "control/settings/SettingsEnums.h"         // for InputDeviceTypeOp...
 #include "gui/toolbarMenubar/model/ColorPalette.h"  // for Palette
 #include "model/FormatDefinitions.h"                // for FormatUnits, XOJ_...
 #include "util/Color.h"
 #include "util/PathUtil.h"  // for getConfigFile
 #include "util/Util.h"      // for PRECISION_FORMAT_...
-#include "util/i18n.h"      // for _#include "util/safe_casts.h"  // for as_unsigned
+#include "util/i18n.h"      // for _
+#include "util/safe_casts.h"  // for as_unsigned
+#include "util/utf8_view.h"   // for utf8_view
 
 #include "ButtonConfig.h"  // for ButtonConfig
 #include "config-dev.h"    // for PALETTE_FILE
 #include "config-dev.h"
-#include "filesystem.h"  // for path, u8path, exists
+#include "filesystem.h"  // for path, exists
 
 
 using std::string;
@@ -37,7 +40,7 @@ constexpr auto DEFAULT_FONT_SIZE = 12;
 constexpr auto DEFAULT_TOOLBAR = "Portrait";
 
 #define SAVE_BOOL_PROP(var) xmlNode = saveProperty((const char*)#var, (var) ? "true" : "false", root)
-#define SAVE_STRING_PROP(var) xmlNode = saveProperty((const char*)#var, (var).empty() ? "" : (var).c_str(), root)
+#define SAVE_STRING_PROP(var) xmlNode = saveProperty((const char*)#var, (var).empty() ? "" : (var).data(), root)
 #define SAVE_FONT_PROP(var) xmlNode = saveProperty((const char*)#var, var.asString().c_str(), root)
 #define SAVE_INT_PROP(var) xmlNode = saveProperty((const char*)#var, var, root)
 #define SAVE_UINT_PROP(var) xmlNode = savePropertyUnsigned((const char*)#var, var, root)
@@ -59,6 +62,7 @@ void Settings::loadDefault() {
 
     this->maximized = false;
     this->showPairedPages = false;
+    this->showPageShadow = true;
     this->presentationMode = false;
 
     this->numColumns = 1;  // only one of these applies at a time
@@ -148,9 +152,8 @@ void Settings::loadDefault() {
     this->touchDrawing = false;
     this->gtkTouchInertialScrolling = true;
 
-    this->defaultSaveName = _("%F-Note-%H-%M");
-
-    this->defaultPdfExportName = _("%{name}_annotated");
+    this->defaultSaveName = xoj::util::utf8(_("%F-Note-%H-%M")).str();
+    this->defaultPdfExportName = xoj::util::utf8(_("%{name}_annotated")).str();
 
     // Eraser
     this->buttonConfig[BUTTON_ERASER] = std::make_unique<ButtonConfig>(TOOL_ERASER, Colors::black, TOOL_SIZE_NONE,
@@ -164,6 +167,12 @@ void Settings::loadDefault() {
     // Right button
     this->buttonConfig[BUTTON_MOUSE_RIGHT] = std::make_unique<ButtonConfig>(TOOL_NONE, Colors::black, TOOL_SIZE_NONE,
                                                                             DRAWING_TYPE_DEFAULT, ERASER_TYPE_NONE);
+    // 4th button
+    this->buttonConfig[BUTTON_MOUSE_4] = std::make_unique<ButtonConfig>(TOOL_NONE, Colors::black, TOOL_SIZE_NONE,
+                                                                        DRAWING_TYPE_DEFAULT, ERASER_TYPE_NONE);
+    // 5th button
+    this->buttonConfig[BUTTON_MOUSE_5] = std::make_unique<ButtonConfig>(TOOL_NONE, Colors::black, TOOL_SIZE_NONE,
+                                                                        DRAWING_TYPE_DEFAULT, ERASER_TYPE_NONE);
     // Touch
     this->buttonConfig[BUTTON_TOUCH] = std::make_unique<ButtonConfig>(TOOL_NONE, Colors::black, TOOL_SIZE_NONE,
                                                                       DRAWING_TYPE_DEFAULT, ERASER_TYPE_NONE);
@@ -199,7 +208,7 @@ void Settings::loadDefault() {
     this->backgroundColor = Colors::xopp_gainsboro02;
 
     // clang-format off
-	this->pageTemplate = "xoj/template\ncopyLastPageSettings=true\nsize=595.275591x841.889764\nbackgroundType=lined\nbackgroundColor=#ffffff\n";
+	this->pageTemplateSettings.parse("xoj/template\ncopyLastPageSettings=true\nsize=595.275591x841.889764\nbackgroundType=lined\nbackgroundColor=#ffffff\n");
     // clang-format on
 
 #ifdef ENABLE_AUDIO
@@ -409,11 +418,11 @@ void Settings::parseItem(xmlDocPtr doc, xmlNodePtr cur) {
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("selectedToolbar")) == 0) {
         this->selectedToolbar = reinterpret_cast<const char*>(value);
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("lastSavePath")) == 0) {
-        this->lastSavePath = fs::u8path(reinterpret_cast<const char*>(value));
+        this->lastSavePath = fs::path(xoj::util::utf8(value));
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("lastOpenPath")) == 0) {
-        this->lastOpenPath = fs::u8path(reinterpret_cast<const char*>(value));
+        this->lastOpenPath = fs::path(xoj::util::utf8(value));
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("lastImagePath")) == 0) {
-        this->lastImagePath = fs::u8path(reinterpret_cast<const char*>(value));
+        this->lastImagePath = fs::path(xoj::util::utf8(value));
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("edgePanSpeed")) == 0) {
         this->edgePanSpeed = tempg_ascii_strtod(reinterpret_cast<const char*>(value), nullptr);
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("edgePanMaxMult")) == 0) {
@@ -467,6 +476,8 @@ void Settings::parseItem(xmlDocPtr doc, xmlNodePtr cur) {
         this->layoutBottomToTop = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("showPairedPages")) == 0) {
         this->showPairedPages = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
+    } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("showPageShadow")) == 0) {
+        this->showPageShadow = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("numPairsOffset")) == 0) {
         this->numPairsOffset = g_ascii_strtoll(reinterpret_cast<const char*>(value), nullptr, 10);
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("presentationMode")) == 0) {
@@ -496,19 +507,19 @@ void Settings::parseItem(xmlDocPtr doc, xmlNodePtr cur) {
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("useStockIcons")) == 0) {
         this->useStockIcons = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("defaultSaveName")) == 0) {
-        this->defaultSaveName = reinterpret_cast<const char*>(value);
+        this->defaultSaveName = xoj::util::utf8(value).str();
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("defaultPdfExportName")) == 0) {
-        this->defaultPdfExportName = reinterpret_cast<const char*>(value);
+        this->defaultPdfExportName = xoj::util::utf8(value).str();
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("pluginEnabled")) == 0) {
         this->pluginEnabled = reinterpret_cast<const char*>(value);
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("pluginDisabled")) == 0) {
         this->pluginDisabled = reinterpret_cast<const char*>(value);
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("pageTemplate")) == 0) {
-        this->pageTemplate = reinterpret_cast<const char*>(value);
+        this->pageTemplateSettings.parse(reinterpret_cast<const char*>(value));
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("sizeUnit")) == 0) {
         this->sizeUnit = reinterpret_cast<const char*>(value);
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("audioFolder")) == 0) {
-        this->audioFolder = fs::u8path(reinterpret_cast<const char*>(value));
+        this->audioFolder = fs::path(xoj::util::utf8(value));
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("autosaveEnabled")) == 0) {
         this->autosaveEnabled = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("autosaveTimeout")) == 0) {
@@ -659,8 +670,7 @@ void Settings::parseItem(xmlDocPtr doc, xmlNodePtr cur) {
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("latexSettings.defaultText")) == 0) {
         this->latexSettings.defaultText = reinterpret_cast<char*>(value);
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("latexSettings.globalTemplatePath")) == 0) {
-        std::string v(reinterpret_cast<char*>(value));
-        this->latexSettings.globalTemplatePath = fs::u8path(v);
+        this->latexSettings.globalTemplatePath = fs::path(xoj::util::utf8(value));
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("latexSettings.genCmd")) == 0) {
         this->latexSettings.genCmd = reinterpret_cast<char*>(value);
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("latexSettings.sourceViewThemeId")) == 0) {
@@ -723,9 +733,9 @@ void Settings::parseItem(xmlDocPtr doc, xmlNodePtr cur) {
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("stabilizerFinalizeStroke")) == 0) {
         this->stabilizerFinalizeStroke = xmlStrcmp(value, reinterpret_cast<const xmlChar*>("true")) == 0;
     } else if (xmlStrcmp(name, reinterpret_cast<const xmlChar*>("colorPalette")) == 0) {
-        std::string paletteConfig = std::string{reinterpret_cast<const char*>(value)};
+        std::string_view paletteConfig = std::string_view{reinterpret_cast<const char*>(value)};
         if (!paletteConfig.empty()) {
-            this->colorPaletteSetting = paletteConfig;
+            this->colorPaletteSetting = fs::path(xoj::util::utf8(paletteConfig));
         }
     }
     /**/
@@ -830,7 +840,7 @@ auto Settings::load() -> bool {
         save();
     }
 
-    xmlDocPtr doc = xmlParseFile(filepath.u8string().c_str());
+    xmlDocPtr doc = xmlParseFile(char_cast(filepath.u8string().c_str()));
 
     if (doc == nullptr) {
         g_warning("Settings::load:: doc == null, could not load Settings!\n");
@@ -930,15 +940,15 @@ void Settings::saveButtonConfig() {
         const auto& cfg = buttonConfig[i];
 
         ToolType const type = cfg->action;
-        e.setString("tool", toolTypeToString(type));
+        e.setString("tool", toolTypeToString(type).data());
 
         if (type == TOOL_PEN) {
-            e.setString("strokeType", strokeTypeToString(cfg->strokeType));
+            e.setString("strokeType", strokeTypeToString(cfg->strokeType).data());
         }
 
         if (type == TOOL_PEN || type == TOOL_HIGHLIGHTER) {
-            e.setString("drawingType", drawingTypeToString(cfg->drawingType));
-            e.setString("size", toolSizeToString(cfg->size));
+            e.setString("drawingType", drawingTypeToString(cfg->drawingType).data());
+            e.setString("size", toolSizeToString(cfg->size).data());
         }
 
         if (type == TOOL_PEN || type == TOOL_HIGHLIGHTER || type == TOOL_TEXT) {
@@ -946,8 +956,8 @@ void Settings::saveButtonConfig() {
         }
 
         if (type == TOOL_ERASER) {
-            e.setString("eraserMode", eraserTypeToString(cfg->eraserMode));
-            e.setString("size", toolSizeToString(cfg->size));
+            e.setString("eraserMode", eraserTypeToString(cfg->eraserMode).data());
+            e.setString("size", toolSizeToString(cfg->size).data());
         }
 
         // Touch device
@@ -1007,12 +1017,9 @@ void Settings::save() {
 
     SAVE_STRING_PROP(selectedToolbar);
 
-    auto lastSavePath = this->lastSavePath.u8string();
-    auto lastOpenPath = this->lastOpenPath.u8string();
-    auto lastImagePath = this->lastImagePath.u8string();
-    SAVE_STRING_PROP(lastSavePath);
-    SAVE_STRING_PROP(lastOpenPath);
-    SAVE_STRING_PROP(lastImagePath);
+    saveProperty("lastSavePath", char_cast(this->lastSavePath.u8string().c_str()), root);
+    saveProperty("lastOpenPath", char_cast(this->lastOpenPath.u8string().c_str()), root);
+    saveProperty("lastImagePath", char_cast(this->lastImagePath.u8string().c_str()), root);
 
     SAVE_DOUBLE_PROP(edgePanSpeed);
     SAVE_DOUBLE_PROP(edgePanMaxMult);
@@ -1038,6 +1045,7 @@ void Settings::save() {
     SAVE_INT_PROP(numRows);
     SAVE_BOOL_PROP(viewFixedRows);
     SAVE_BOOL_PROP(showPairedPages);
+    SAVE_BOOL_PROP(showPageShadow);
     SAVE_BOOL_PROP(layoutVertical);
     SAVE_BOOL_PROP(layoutRightToLeft);
     SAVE_BOOL_PROP(layoutBottomToTop);
@@ -1094,8 +1102,9 @@ void Settings::save() {
 
     SAVE_BOOL_PROP(autoloadMostRecent);
     SAVE_BOOL_PROP(autoloadPdfXoj);
-    SAVE_STRING_PROP(defaultSaveName);
-    SAVE_STRING_PROP(defaultPdfExportName);
+    saveProperty("defaultSaveName", defaultSaveName.empty() ? "" : char_cast(defaultSaveName.c_str()), root);
+    saveProperty("defaultPdfExportName", defaultPdfExportName.empty() ? "" : char_cast(defaultPdfExportName.c_str()),
+                 root);
 
     SAVE_BOOL_PROP(autosaveEnabled);
     SAVE_INT_PROP(autosaveTimeout);
@@ -1144,16 +1153,14 @@ void Settings::save() {
     SAVE_UINT_PROP(preloadPagesAfter);
     SAVE_BOOL_PROP(eagerPageCleanup);
 
+    const auto pageTemplate = pageTemplateSettings.toString();
     SAVE_STRING_PROP(pageTemplate);
     ATTACH_COMMENT("Config for new pages");
 
     SAVE_STRING_PROP(sizeUnit);
 
 #ifdef ENABLE_AUDIO
-    {
-        auto audioFolder = this->audioFolder.u8string();
-        SAVE_STRING_PROP(audioFolder);
-    }
+    saveProperty("audioFolder", char_cast(this->audioFolder.u8string().c_str()), root);
     SAVE_INT_PROP(audioInputDevice);
     SAVE_INT_PROP(audioOutputDevice);
     SAVE_DOUBLE_PROP(audioSampleRate);
@@ -1200,7 +1207,7 @@ void Settings::save() {
     SAVE_BOOL_PROP(stabilizerFinalizeStroke);
 
     if (!this->colorPaletteSetting.empty()) {
-        saveProperty("colorPalette", this->colorPaletteSetting.u8string().c_str(), root);
+        saveProperty("colorPalette", char_cast(this->colorPaletteSetting.u8string().c_str()), root);
     }
 
     /**/
@@ -1211,7 +1218,7 @@ void Settings::save() {
     // breaks on Windows due to the native character representation being
     // wchar_t instead of char
     fs::path& p = latexSettings.globalTemplatePath;
-    xmlNode = saveProperty("latexSettings.globalTemplatePath", p.empty() ? "" : p.u8string().c_str(), root);
+    xmlNode = saveProperty("latexSettings.globalTemplatePath", p.empty() ? "" : char_cast(p.u8string().c_str()), root);
     SAVE_STRING_PROP(latexSettings.genCmd);
     SAVE_STRING_PROP(latexSettings.sourceViewThemeId);
     SAVE_FONT_PROP(latexSettings.editorFont);
@@ -1242,7 +1249,7 @@ void Settings::save() {
         saveData(root, p.first, p.second);
     }
 
-    xmlSaveFormatFileEnc(filepath.u8string().c_str(), doc, "UTF-8", 1);
+    xmlSaveFormatFileEnc(char_cast(filepath.u8string().c_str()), doc, "UTF-8", 1);
     xmlFreeDoc(doc);
 }
 
@@ -1721,9 +1728,9 @@ void Settings::setAutoloadPdfXoj(bool load) {
     save();
 }
 
-auto Settings::getDefaultSaveName() const -> string const& { return this->defaultSaveName; }
+auto Settings::getDefaultSaveName() const -> std::u8string const& { return this->defaultSaveName; }
 
-void Settings::setDefaultSaveName(const string& name) {
+void Settings::setDefaultSaveName(const std::u8string& name) {
     if (this->defaultSaveName == name) {
         return;
     }
@@ -1733,9 +1740,9 @@ void Settings::setDefaultSaveName(const string& name) {
     save();
 }
 
-auto Settings::getDefaultPdfExportName() const -> string const& { return this->defaultPdfExportName; }
+auto Settings::getDefaultPdfExportName() const -> std::u8string const& { return this->defaultPdfExportName; }
 
-void Settings::setDefaultPdfExportName(const string& name) {
+void Settings::setDefaultPdfExportName(const std::u8string& name) {
     if (this->defaultPdfExportName == name) {
         return;
     }
@@ -1745,14 +1752,14 @@ void Settings::setDefaultPdfExportName(const string& name) {
     save();
 }
 
-auto Settings::getPageTemplate() const -> string const& { return this->pageTemplate; }
+auto Settings::getPageTemplateSettings() const -> PageTemplateSettings const& { return this->pageTemplateSettings; }
 
-void Settings::setPageTemplate(const string& pageTemplate) {
-    if (this->pageTemplate == pageTemplate) {
+void Settings::setPageTemplateSettings(const PageTemplateSettings& newSettings) {
+    if (this->pageTemplateSettings == newSettings) {
         return;
     }
 
-    this->pageTemplate = pageTemplate;
+    this->pageTemplateSettings = newSettings;
 
     save();
 }
@@ -1805,6 +1812,17 @@ void Settings::setShowPairedPages(bool showPairedPages) {
 }
 
 auto Settings::isShowPairedPages() const -> bool { return this->showPairedPages; }
+
+void Settings::setShowPageShadow(bool showPageShadow) {
+    if (this->showPageShadow == showPageShadow) {
+        return;
+    }
+
+    this->showPageShadow = showPageShadow;
+    save();
+}
+
+auto Settings::isShowPageShadow() const -> bool { return this->showPageShadow; }
 
 void Settings::setPresentationMode(bool presentationMode) {
     if (this->presentationMode == presentationMode) {

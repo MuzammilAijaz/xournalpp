@@ -1,5 +1,7 @@
 #include "LatexGenerator.h"
 
+#include <algorithm>    // for transform
+#include <map>          // for map
 #include <regex>        // for smatch, sregex_iterator
 #include <sstream>      // for ostringstream
 #include <string_view>  // for string_view
@@ -23,24 +25,70 @@ LatexGenerator::LatexGenerator(const LatexSettings& settings): settings(settings
 
 auto LatexGenerator::templateSub(const std::string& input, const std::string& templ, const Color textColor)
         -> std::string {
-    const static std::regex substRe("%%XPP_((TOOL_INPUT)|(TEXT_COLOR))%%");
+    std::map<std::string, std::string> vars;
+    std::vector<std::string> bodyLines;
+
+    const static std::regex directiveRe(R"(^%xpp:([A-Za-z_][A-Za-z0-9_]*)=(.*)$)");
+
+    std::istringstream inputStream(input);
+    std::string line;
+    while (std::getline(inputStream, line)) {
+        std::smatch match;
+        if (std::regex_match(line, match, directiveRe)) {
+            std::string key = match[1].str();
+            std::string value = match[2].str();
+
+            size_t start = value.find_first_not_of(" \t\r\n");
+            if (start != std::string::npos) {
+                size_t end = value.find_last_not_of(" \t\r\n");
+                value = value.substr(start, end - start + 1);
+            } else {
+                value.clear();
+            }
+
+            std::transform(key.begin(), key.end(), key.begin(), ::toupper);
+
+            if (key != "TOOL_INPUT" && key != "TEXT_COLOR") {
+                vars[key] = value;
+            }
+        } else {
+            bodyLines.push_back(line);
+        }
+    }
+
+    std::string strippedBody;
+    for (const auto& l: bodyLines) {
+        if (!strippedBody.empty())
+            strippedBody += '\n';
+        strippedBody += l;
+    }
+
+    vars["TOOL_INPUT"] = strippedBody;
+    vars["TEXT_COLOR"] = Util::rgb_to_hex_string(textColor).substr(1);
+
+    const static std::regex substRe(R"(%%XPP_[A-Z][A-Z0-9_]*%%)");
     std::string output;
     output.reserve(templ.length());
     size_t templatePos = 0;
-    for (std::sregex_iterator it(templ.begin(), templ.end(), substRe); it != std::sregex_iterator{}; it++) {
+
+    for (std::sregex_iterator it(templ.begin(), templ.end(), substRe); it != std::sregex_iterator{}; ++it) {
         std::smatch match = *it;
-        std::string matchStr = match[1];
-        std::string repl;
-        // Performance can be optimized here by precomputing hashes
-        if (matchStr == "TOOL_INPUT") {
-            repl = input;
-        } else if (matchStr == "TEXT_COLOR") {
-            repl = Util::rgb_to_hex_string(textColor).substr(1);
-        }
+        std::string placeholder = match.str();
+
+        constexpr size_t kPrefixLen = 6;  // "%%XPP_"
+        constexpr size_t kSuffixLen = 2;  // "%%"
+        std::string key = placeholder.substr(kPrefixLen, placeholder.length() - kPrefixLen - kSuffixLen);
+
         output.append(templ, templatePos, as_unsigned(match.position()) - templatePos);
-        output.append(repl);
+
+        auto itVar = vars.find(key);
+        if (itVar != vars.end()) {
+            output.append(itVar->second);
+        }
+
         templatePos = as_unsigned(match.position() + match.length());
     }
+
     output.append(templ, templatePos);
     return output;
 }
@@ -48,14 +96,9 @@ auto LatexGenerator::templateSub(const std::string& input, const std::string& te
 auto LatexGenerator::asyncRun(const fs::path& texDir, const std::string& texFileContents) -> Result {
     std::string cmd = this->settings.genCmd;
     GErrorGuard err{};
-    std::string texFilePathOSEncoding;
-    try {
-        texFilePathOSEncoding = (Util::getLongPath(texDir) / "tex.tex").string();
-    } catch (const fs::filesystem_error& e) {
-        GenError res{FS(_F("Failed to parse LaTeX generator path: {1}") % e.what())};
-    }
+    std::string texFilePathOSEncoding = Util::GFilename(Util::getLongPath(texDir) / "tex.tex").c_str();
 
-    for (auto i = cmd.find(u8"{}"); i != std::string::npos; i = cmd.find(u8"{}", i + texFilePathOSEncoding.length())) {
+    for (auto i = cmd.find("{}"); i != std::string::npos; i = cmd.find("{}", i + texFilePathOSEncoding.length())) {
         cmd.replace(i, 2, texFilePathOSEncoding);
     }
     // Todo (rolandlo): is this a todo?
@@ -86,7 +129,7 @@ auto LatexGenerator::asyncRun(const fs::path& texDir, const std::string& texFile
 
     auto flags = static_cast<GSubprocessFlags>(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_MERGE);
     xoj::util::GObjectSPtr<GSubprocessLauncher> launcher(g_subprocess_launcher_new(flags), xoj::util::adopt);
-    g_subprocess_launcher_set_cwd(launcher.get(), texDir.u8string().c_str());
+    g_subprocess_launcher_set_cwd(launcher.get(), Util::GFilename(texDir).c_str());
     auto* proc = g_subprocess_launcher_spawnv(launcher.get(), argv.get(), out_ptr(err));
 
     if (proc) {

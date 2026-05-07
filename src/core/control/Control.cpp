@@ -1,20 +1,20 @@
 #include "Control.h"
 
-#include <algorithm>   // for max
-#include <cstdlib>     // for size_t
-#include <exception>   // for exce...
+#include <algorithm>  // for max
+#include <cstdlib>    // for size_t
+#include <exception>  // for exce...
 #include <functional>  // for bind
 #include <iterator>    // for end
-#include <locale>
-#include <memory>    // for make...
-#include <numeric>   // for accu...
-#include <optional>  // for opti...
-#include <regex>     // for regex
-#include <utility>   // for move
+#include <memory>      // for make...
+#include <optional>    // for opti...
+#include <regex>       // for regex
+#include <string>      // for string
+#include <utility>     // for move
 
 #include "control/AudioController.h"                             // for Audi...
 #include "control/ClipboardHandler.h"                            // for Clip...
 #include "control/CompassController.h"                           // for Comp...
+#include "control/NavigationHistory.h"                           // for Navi...
 #include "control/RecentManager.h"                               // for Rece...
 #include "control/ScrollHandler.h"                               // for Scro...
 #include "control/SetsquareController.h"                         // for Sets...
@@ -39,6 +39,7 @@
 #include "control/tools/TextEditor.h"                            // for Text...
 #include "control/xojfile/LoadHandler.h"                         // for Load...
 #include "control/zoom/ZoomControl.h"                            // for Zoom...
+#include "gui/FloatingToolbox.h"                                 // for Floa...
 #include "gui/MainWindow.h"                                      // for Main...
 #include "gui/PageView.h"                                        // for XojP...
 #include "gui/PdfFloatingToolbox.h"                              // for PdfF...
@@ -98,6 +99,7 @@
 #include "util/PlaceholderString.h"                              // for Plac...
 #include "util/PopupWindowWrapper.h"                             // for PopupWindowWrapper
 #include "util/Stacktrace.h"                                     // for Stac...
+#include "util/StringUtils.h"                                    // for char_cast
 #include "util/Util.h"                                           // for exec...
 #include "util/XojMsgBox.h"                                      // for XojM...
 #include "util/glib_casts.h"                                     // for wrap_v
@@ -220,7 +222,7 @@ Control::~Control() {
 
 struct Control::MissingPdfData {
     bool wasPdfAttached;
-    std::string missingFileName;
+    fs::path missingFileName;
 };
 
 void Control::setLastAutosaveFile(fs::path newAutosaveFile) {
@@ -242,7 +244,7 @@ void Control::deleteLastAutosaveFile() {
             fs::remove(this->lastAutosaveFilename);
         }
     } catch (const fs::filesystem_error& e) {
-        auto fmtstr = FS(_F("Could not remove old autosave file \"{1}\": {2}") % this->lastAutosaveFilename.string() %
+        auto fmtstr = FS(_F("Could not remove old autosave file \"{1}\": {2}") % this->lastAutosaveFilename.u8string() %
                          e.what());
         Util::execInUiThread([fmtstr, win = getGtkWindow()]() { XojMsgBox::showErrorToUser(win, fmtstr); });
     }
@@ -250,7 +252,7 @@ void Control::deleteLastAutosaveFile() {
 }
 
 auto Control::checkChangedDocument(Control* control) -> bool {
-    if (!control->doc->tryLock()) {
+    if (!control->doc->try_lock_shared()) {
         // call again later
         return true;
     }
@@ -263,7 +265,7 @@ auto Control::checkChangedDocument(Control* control) -> bool {
         }
     }
     control->changedPages.clear();
-    control->doc->unlock();
+    control->doc->unlock_shared();
 
     // Call again
     return true;
@@ -288,6 +290,7 @@ void Control::initWindow(MainWindow* win) {
     this->win = win;
 
     this->actionDB = std::make_unique<ActionDatabase>(this);
+    this->navHistory = std::make_unique<NavigationHistory>(this);
 
     selectTool(toolHandler->getToolType());
     this->sidebar = new Sidebar(win, this);
@@ -370,7 +373,14 @@ void Control::updatePageNumbers(size_t page, size_t pdfPage) {
     this->actionDB->enableAction(Action::GOTO_NEXT, current < count - 1);
     this->actionDB->enableAction(Action::GOTO_LAST, current < count - 1);
     this->actionDB->enableAction(Action::GOTO_NEXT_ANNOTATED_PAGE, current < count - 1);
+
+    if (navHistory) {
+        navHistory->prune();
+        navHistory->updateActions();
+    }
 }
+
+NavigationHistory* Control::getNavigationHistory() const { return navHistory.get(); }
 
 bool Control::toggleCompass() {
     return toggleGeometryTool<Compass, xoj::view::CompassView, CompassController, CompassInputHandler,
@@ -416,6 +426,16 @@ void Control::resetGeometryTool() {
     xournal->input->resetGeometryToolInputHandler();
 }
 
+void Control::showFloatingToolbox(int x, int y) {
+    GtkWidget* mainWindow = GTK_WIDGET(this->getGtkWindow());
+    GtkWidget* mainBox = this->getWindow()->get("mainBox");
+
+    gint mainBoxX, mainBoxY;
+    gtk_widget_translate_coordinates(mainWindow, mainBox, x, y, &mainBoxX, &mainBoxY);
+
+    this->getWindow()->getFloatingToolbox()->show(mainBoxX, mainBoxY);
+}
+
 auto Control::copy() -> bool {
     if (this->win && this->win->getXournal()->copy()) {
         return true;
@@ -451,7 +471,7 @@ void Control::selectAlpha(OpacityFeature feature) {
             alpha = this->toolHandler->getSelectPDFTextMarkerOpacity();
             break;
         default:
-            g_warning("Unhandled OpacityFeature for selectAlpha event: %s", opacityFeatureToString(feature).c_str());
+            g_warning("Unhandled OpacityFeature for selectAlpha event: %s", opacityFeatureToString(feature).data());
             Stacktrace::printStacktrace();
             break;
     }
@@ -469,7 +489,7 @@ void Control::selectAlpha(OpacityFeature feature) {
                         break;
                     default:
                         g_warning("Unhandled OpacityFeature for callback of SelectOpacityDialog: %s",
-                                  opacityFeatureToString(feature).c_str());
+                                  opacityFeatureToString(feature).data());
                         Stacktrace::printStacktrace();
                         break;
                 }
@@ -490,6 +510,8 @@ void Control::selectAllOnPage() {
         return;
     }
 
+    win->getXournal()->clearSelection();
+
     this->doc->lock();
     XojPageView* view = win->getXournal()->getViewFor(pageNr);
     if (view == nullptr) {
@@ -499,8 +521,6 @@ void Control::selectAllOnPage() {
 
     PageRef page = this->doc->getPage(pageNr);
     Layer* layer = page->getSelectedLayer();
-
-    win->getXournal()->clearSelection();
 
     auto elements = layer->clearNoFree();
     this->doc->unlock();
@@ -537,9 +557,9 @@ void Control::reorderSelection(EditSelection::OrderChange change) {
  * @return the page ID or size_t_npos if the page is not found
  */
 auto Control::firePageSelected(const PageRef& page) -> size_t {
-    this->doc->lock();
+    this->doc->lock_shared();
     size_t pageId = this->doc->indexOf(page);
-    this->doc->unlock();
+    this->doc->unlock_shared();
     if (pageId == npos) {
         return npos;
     }
@@ -548,7 +568,11 @@ auto Control::firePageSelected(const PageRef& page) -> size_t {
     return pageId;
 }
 
-void Control::firePageSelected(size_t page) { DocumentHandler::firePageSelected(page); }
+void Control::firePageSelected(size_t page) {
+    if (page != this->getCurrentPageNo()) {
+        DocumentHandler::firePageSelected(page);
+    }
+}
 
 void Control::manageToolbars() {
     xoj::popup::PopupWindowWrapper<ToolbarManageDialog> dlg(
@@ -655,10 +679,8 @@ void Control::setShowMenubar(bool enabled) {
 
 void Control::disableSidebarTmp(bool disabled) { this->sidebar->setTmpDisabled(disabled); }
 
-void Control::addDefaultPage(const std::optional<std::string>& pageTemplate, Document* doc) {
-    const std::string& templ = pageTemplate.value_or(settings->getPageTemplate());
-    PageTemplateSettings model;
-    model.parse(templ);
+void Control::addDefaultPage(const std::optional<PageTemplateSettings>& pageTemplate, Document* doc) {
+    const auto& model = pageTemplate.value_or(this->settings->getPageTemplateSettings());
 
     auto page = std::make_shared<XojPage>(model.getPageWidth(), model.getPageHeight());
     page->setBackgroundColor(model.getBackgroundColor());
@@ -688,9 +710,9 @@ void Control::deletePage() {
     // if the current page contains the geometry tool, reset it
     size_t pNr = getCurrentPageNo();
     if (geometryToolController) {
-        doc->lock();
+        doc->lock_shared();
         auto page = doc->indexOf(geometryToolController->getPage());
-        doc->unlock();
+        doc->unlock_shared();
         if (page == pNr) {
             resetGeometryTool();
         }
@@ -706,9 +728,9 @@ void Control::deletePage() {
         return;
     }
 
-    this->doc->lock();
+    this->doc->lock_shared();
     PageRef page = doc->getPage(pNr);
-    this->doc->unlock();
+    this->doc->unlock_shared();
 
     // first send event, then delete page...
     firePageDeleted(pNr);
@@ -831,11 +853,11 @@ void Control::askInsertPdfPage(size_t pdfPage) {
                                if (response == Responses::AFTER || response == Responses::END) {
                                    Document* doc = ctrl->getDocument();
 
-                                   doc->lock();
+                                   doc->lock_shared();
                                    size_t position = response == Responses::AFTER ? ctrl->getCurrentPageNo() + 1 :
                                                                                     doc->getPageCount();
                                    XojPdfPageSPtr pdf = doc->getPdfPage(pdfPage);
-                                   doc->unlock();
+                                   doc->unlock_shared();
 
                                    if (pdf) {
                                        auto page = std::make_shared<XojPage>(pdf->getWidth(), pdf->getHeight());
@@ -846,8 +868,8 @@ void Control::askInsertPdfPage(size_t pdfPage) {
                            });
 }
 
-void Control::insertNewPage(size_t position, bool shouldScrollToPage) {
-    pageBackgroundChangeController->insertNewPage(position, shouldScrollToPage);
+void Control::insertNewPage(size_t position, bool automatedInsertion) {
+    pageBackgroundChangeController->insertNewPage(position, automatedInsertion);
 }
 
 void Control::appendNewPdfPages() {
@@ -871,9 +893,9 @@ void Control::appendNewPdfPages() {
     }
     for (size_t i = 0; i != insertCount; ++i) {
 
-        doc->lock();
+        doc->lock_shared();
         XojPdfPageSPtr pdf = doc->getPdfPage(currentPdfPageCount + i);
-        doc->unlock();
+        doc->unlock_shared();
 
         if (pdf) {
             auto newPage = std::make_shared<XojPage>(pdf->getWidth(), pdf->getHeight());
@@ -890,6 +912,7 @@ void Control::insertPage(const PageRef& page, size_t position, bool shouldScroll
     this->doc->lock();
     this->doc->insertPage(page, position);  // insert the new page to the document and update page numbers
     this->doc->unlock();
+    undoRedo->addUndoAction(std::make_unique<InsertDeletePageUndoAction>(page, position, true));
 
     // notify document listeners about the inserted page; this creates the new XojViewPage, recalculates the layout
     // and creates a preview page in the sidebar
@@ -905,7 +928,6 @@ void Control::insertPage(const PageRef& page, size_t position, bool shouldScroll
     }
 
     updatePageActions();
-    undoRedo->addUndoAction(std::make_unique<InsertDeletePageUndoAction>(page, position, true));
 }
 
 void Control::gotoPage() {
@@ -913,7 +935,7 @@ void Control::gotoPage() {
             this->gladeSearchPath, this->getCurrentPageNo(), this->doc->getPageCount(),
             [scroll = this->scrollHandler](size_t pageNumber) {
                 xoj_assert(pageNumber != 0);
-                scroll->scrollToPage(pageNumber - 1);
+                scroll->jumpToPage(pageNumber - 1);
             });
     popup.show(GTK_WINDOW(this->win->getWindow()));
 }
@@ -968,9 +990,9 @@ void Control::paperFormat() {
 
 void Control::changePageBackgroundColor() {
     auto pNr = getCurrentPageNo();
-    this->doc->lock();
+    this->doc->lock_shared();
     auto const& p = this->doc->getPage(pNr);
-    this->doc->unlock();
+    this->doc->unlock_shared();
 
     if (!p) {
         return;
@@ -1103,9 +1125,9 @@ auto Control::searchTextOnPage(const std::string& text, size_t pageNumber, size_
 }
 
 auto Control::getCurrentPage() -> PageRef {
-    this->doc->lock();
+    this->doc->lock_shared();
     PageRef p = this->doc->getPage(getCurrentPageNo());
-    this->doc->unlock();
+    this->doc->unlock_shared();
 
     return p;
 }
@@ -1448,12 +1470,15 @@ void Control::showSettings() {
 
                 xournal->getHandRecognition()->reload();
                 ctrl->win->updateColorscheme();
+
+                ctrl->getActionDatabase()->setActionState(Action::TOGGLE_TOUCH_DRAWING,
+                                                          settings->getTouchDrawingEnabled());
             });
     dlg.show(GTK_WINDOW(this->win->getWindow()));
 }
 
 static std::unique_ptr<Document> createNewDocument(Control* ctrl, fs::path filepath,
-                                                   const std::optional<std::string>& pageTemplate) {
+                                                   const std::optional<PageTemplateSettings>& pageTemplate) {
     auto newDoc = std::make_unique<Document>(ctrl);
     if (!filepath.empty()) {
         newDoc->setFilepath(std::move(filepath));
@@ -1527,25 +1552,93 @@ void Control::replaceDocument(std::unique_ptr<Document> doc, int scrollToPage) {
     fileLoaded(scrollToPage);
 }
 
-void Control::openXoppFile(fs::path filepath, int scrollToPage, std::function<void(bool)> callback) {
-    LoadHandler loadHandler;
-    std::unique_ptr<Document> doc(loadHandler.loadDocument(filepath));
+static auto formatErrorMessages(const std::vector<std::string>& errorMessages) -> std::string {
+    // Deduplicate identical repeated messages
+    std::vector<std::string> deduplicated;
 
-    if (!doc) {
-        string msg = FS(_F("Error opening file \"{1}\"") % filepath.u8string()) + "\n" + loadHandler.getLastError();
-        XojMsgBox::showErrorToUser(this->getGtkWindow(), msg);
+    for (std::size_t i = 0; i < errorMessages.size();) {
+        std::size_t j = i + 1;
+        while (j < errorMessages.size() && errorMessages[j] == errorMessages[i]) {
+            ++j;
+        }
+        const std::size_t count = j - i;
+
+        deduplicated.emplace_back(StringUtils::markup_escape(errorMessages[i]));
+        if (count == 2) {
+            deduplicated.emplace_back(deduplicated.back());
+        } else if (count > 2) {
+            deduplicated.emplace_back(FS(_F("<i>Above error repeated {1} times</i>") % (count - 1)));
+        }
+
+        i = j;
+    }
+
+    // Remove middle messages if the list is still too long
+    constexpr std::size_t MAX_MESSAGE_COUNT = 12;
+    if (deduplicated.size() > MAX_MESSAGE_COUNT) {
+        constexpr std::size_t BEFORE = MAX_MESSAGE_COUNT / 2;
+        constexpr std::size_t AFTER = MAX_MESSAGE_COUNT - BEFORE - 1;  // reserve one line for the overflow indication
+        deduplicated[BEFORE] =
+                FS(_F("<i>&lt;{1} more lines of error messages&gt;</i>") % (deduplicated.size() - (BEFORE + AFTER)));
+        deduplicated.erase(deduplicated.begin() + BEFORE + 1, deduplicated.end() - AFTER);
+    }
+
+    if (deduplicated.empty()) {
+        return "";
+    }
+
+    // Todo(C++23): use std::views::join_with
+    std::size_t totalSize = deduplicated.size() - 1;  // for '\n' characters
+    for (auto& str: deduplicated) {
+        totalSize += str.size();
+    }
+    std::string result;
+    result.reserve(totalSize);
+    result.append(deduplicated.front());
+    for (auto it = deduplicated.begin() + 1; it != deduplicated.end(); ++it) {
+        result.append('\n' + *it);
+    }
+    return result;
+}
+
+void Control::openXoppFile(fs::path filepath, int scrollToPage, std::function<void(bool)> callback) {
+    std::unique_ptr<Document> doc{};
+    std::optional<MissingPdfData> missingPdf{};
+    int fileVersion{};
+    std::vector<std::string> errorMessages{};
+
+    try {
+        LoadHandler loadHandler(&errorMessages);
+        doc = loadHandler.loadDocument(filepath);
+
+        if (!loadHandler.getMissingPdfFilename().empty() || loadHandler.isAttachedPdfMissing()) {
+            missingPdf = {loadHandler.isAttachedPdfMissing(), loadHandler.getMissingPdfFilename()};
+        }
+        fileVersion = loadHandler.getFileVersion();
+    } catch (std::exception& e) {
+        g_warning("LoadHandler failed to load document: %s", e.what());
+
+        std::string msg = FS(_F("Error opening file \"{1}\".\n\n"
+                                "<tt>{2}</tt>\n<b>{3}</b>") %
+                             filepath.u8string() % formatErrorMessages(errorMessages) % e.what());
+        XojMsgBox::showMarkupMessageToUser(this->getGtkWindow(), msg, "", GTK_MESSAGE_ERROR);
         callback(false);
         return;
     }
 
-    std::optional<MissingPdfData> missingPdf;
-    if (!loadHandler.getMissingPdfFilename().empty() || loadHandler.isAttachedPdfMissing()) {
-        missingPdf = {loadHandler.isAttachedPdfMissing(), loadHandler.getMissingPdfFilename()};
-    }
-
-    auto afterOpen = [ctrl = this, missingPdf = std::move(missingPdf), doc = std::move(doc), filepath,
-                      scrollToPage]() mutable {
+    auto afterOpen = [ctrl = this, missingPdf = std::move(missingPdf), errorMessages = std::move(errorMessages),
+                      doc = std::move(doc), filepath, scrollToPage]() mutable {
         ctrl->replaceDocument(std::move(doc), scrollToPage);
+
+        if (!errorMessages.empty()) {
+            std::string msg =
+                    FS(_F("There were some errors while loading the file. Some information might have been lost. "
+                          "Do not overwrite your old file unless you are sure everything you need was loaded "
+                          "correctly.\n\n"
+                          "Error messages:\n<tt>{1}</tt>") %
+                       formatErrorMessages(errorMessages));
+            XojMsgBox::showMarkupMessageToUser(ctrl->getGtkWindow(), msg, "", GTK_MESSAGE_WARNING);
+        }
 
         if (missingPdf && (missingPdf->wasPdfAttached || !missingPdf->missingFileName.empty())) {
             // give the user a second chance to select a new PDF filepath, or to discard the PDF
@@ -1553,7 +1646,7 @@ void Control::openXoppFile(fs::path filepath, int scrollToPage, std::function<vo
         }
     };
 
-    if (loadHandler.getFileVersion() > FILE_FORMAT_VERSION) {
+    if (fileVersion > FILE_FORMAT_VERSION) {
         enum { YES = 1, NO };
         std::vector<XojMsgBox::Button> buttons = {{_("Yes"), YES}, {_("No"), NO}};
         XojMsgBox::askQuestion(
@@ -1591,7 +1684,6 @@ bool Control::openPdfFile(fs::path filepath, bool attachToDocument, int scrollTo
 bool Control::openPngFile(fs::path filepath, bool attachToDocument, int scrollToPage) {
     fs::path imagePath(filepath);
     this->getCursor()->setCursorBusy(true);
-    auto doc = std::make_unique<Document>(this);
     this->replaceDocument(createNewDocument(this, std::move(filepath), std::nullopt), -1);
 
     // Put a png file directly in the page
@@ -1632,23 +1724,42 @@ bool Control::openXoptFile(fs::path filepath) {
     auto pageTemplate = Util::readString(filepath);
     if (!pageTemplate) {
         // Unable to read the template from the file
+        // Error message has already been displayed
         return false;
     }
-    this->replaceDocument(createNewDocument(this, std::move(filepath), pageTemplate), -1);
+
+    PageTemplateSettings model;
+    if (!model.parse(*pageTemplate)) {
+        const auto msg = FS(_F("Error reading template file \"{1}\"") % filepath.u8string());
+        XojMsgBox::showErrorToUser(this->getGtkWindow(), msg);
+        return false;
+    }
+
+    this->replaceDocument(createNewDocument(this, std::move(filepath), model), -1);
     return true;
 }
 
 void Control::openFileWithoutSavingTheCurrentDocument(fs::path filepath, bool attachToDocument, int scrollToPage,
                                                       std::function<void(bool)> callback) {
-    if (filepath.empty() || !fs::exists(filepath)) {
-        this->replaceDocument(createNewDocument(this, std::move(filepath), std::nullopt), -1);
+    if (filepath.empty()) {
+        this->replaceDocument(createNewDocument(this, fs::path(), std::nullopt), -1);
         callback(true);
         return;
     }
 
+    if (std::error_code err; !fs::exists(filepath, err)) {
+        std::string message =
+                err ? FS(_F("Failed to determine if path exists \"{1}\": {2}") % filepath.u8string() % err.message()) :
+                      FS(_F("That file does not exist:\n\"{1}\"") % filepath.u8string());
+        XojMsgBox::showErrorToUser(getGtkWindow(), message);
+        // We create an empty document to avoid ever being in a "no document" state.
+        this->replaceDocument(createNewDocument(this, fs::path(), std::nullopt), -1);
+        callback(false);
+        return;
+    }
+
     if (filepath.extension() == ".xopt") {
-        this->openXoptFile(std::move(filepath));
-        callback(true);
+        callback(this->openXoptFile(std::move(filepath)));
         return;
     }
 
@@ -1683,31 +1794,29 @@ void Control::openFile(fs::path filepath, std::function<void(bool)> callback, in
         return;
     }
 
-    this->close([ctrl = this, filepath = std::move(filepath), cb = std::move(callback),
-                 scrollToPage](bool closed) mutable {
-        if (closed) {
-            ctrl->openFileWithoutSavingTheCurrentDocument(std::move(filepath), false, scrollToPage, std::move(cb));
-        }
-    });
+    this->close(
+            [ctrl = this, filepath = std::move(filepath), cb = std::move(callback), scrollToPage](bool closed) mutable {
+                if (closed) {
+                    ctrl->openFileWithoutSavingTheCurrentDocument(std::move(filepath), false, scrollToPage,
+                                                                  std::move(cb));
+                }
+            },
+            false, true, forceOpen);
 }
 
 void Control::fileLoaded(int scrollToPage) {
-    this->doc->lock();
+    this->doc->lock_shared();
     auto filepath = this->doc->getEvMetadataFilename();
-    this->doc->unlock();
+    this->doc->unlock_shared();
 
     if (!filepath.empty()) {
-        MetadataEntry md = MetadataManager::getForFile(filepath);
-        if (!md.valid) {
-            md.zoom = -1;
-            md.page = 0;
+        auto md = MetadataManager::getForFile(filepath);
+        if (md) {
+            if (scrollToPage >= 0) {
+                md->page = scrollToPage;
+            }
+            loadMetadata(*md);
         }
-
-        if (scrollToPage >= 0) {
-            md.page = scrollToPage;
-        }
-
-        loadMetadata(md);
         RecentManager::addRecentFileFilename(filepath);
     } else {
         zoom->updateZoomFitValue();
@@ -1723,7 +1832,7 @@ void Control::fileLoaded(int scrollToPage) {
 enum class MissingPdfDialogOptions : gint { USE_PROPOSED, SELECT_OTHER, REMOVE, CANCEL };
 
 void Control::promptMissingPdf(Control::MissingPdfData& missingPdf, const fs::path& filepath) {
-    const fs::path missingFilePath = fs::path(missingPdf.missingFileName);
+    const fs::path& missingFilePath = missingPdf.missingFileName;
 
     // create error message
     std::string parentFolderPath;
@@ -1760,7 +1869,7 @@ void Control::promptMissingPdf(Control::MissingPdfData& missingPdf, const fs::pa
     bool proposePdfFile = !missingPdf.wasPdfAttached && !filename.empty() && fs::exists(proposedPdfFilepath) &&
                           !fs::is_directory(proposedPdfFilepath);
     if (proposePdfFile) {
-        msg += FS(_F("\nProposed replacement file: \"{1}\"") % proposedPdfFilepath.string());
+        msg += FS(_F("\nProposed replacement file: \"{1}\"") % proposedPdfFilepath.u8string());
     }
 
     // show the dialog
@@ -1811,9 +1920,6 @@ public:
  * Load the data after processing the document...
  */
 auto Control::loadMetadataCallback(MetadataCallbackData* data) -> bool {
-    if (!data->md.valid) {
-        return false;
-    }
     ZoomControl* zoom = data->ctrl->zoom;
     if (zoom->isZoomPresentationMode()) {
         data->ctrl->setViewPresentationMode(true);
@@ -1852,9 +1958,9 @@ void Control::askToAnnotatePdf() {
 }
 
 void Control::print() {
-    this->doc->lock();
+    this->doc->lock_shared();
     PrintHandler::print(this->doc, getCurrentPageNo(), this->getGtkWindow());
-    this->doc->unlock();
+    this->doc->unlock_shared();
 }
 
 void Control::block(const string& name) {
@@ -1897,7 +2003,7 @@ void Control::unblock() {
 void Control::setMaximumState(size_t max) { this->maxState = max; }
 
 void Control::setCurrentState(size_t state) {
-    Util::execInUiThread([=]() {
+    Util::execInUiThread([state, this]() {
         gtk_progress_bar_set_fraction(this->pgState,
                                       static_cast<gdouble>(state) / static_cast<gdouble>(this->maxState));
     });
@@ -1944,44 +2050,26 @@ void Control::showColorChooserDialog() {
 }
 
 void Control::updateWindowTitle() {
-    string title{};
+    std::string title{};  ///< Actually a UTF-8 string
 
-    this->doc->lock();
-    if (doc->getFilepath().empty()) {
-        if (doc->getPdfFilepath().empty()) {
-            title = _("Unsaved Document");
-        } else {
-            if (settings->isPageNumberInTitlebarShown()) {
-                title += ("[" + std::to_string(getCurrentPageNo() + 1) + "/" + std::to_string(doc->getPageCount()) +
-                          "]  ");
-            }
-            if (undoRedo->isChanged()) {
-                title += "*";
-            }
-
-            if (settings->isFilepathInTitlebarShown()) {
-                title += ("[" + doc->getPdfFilepath().parent_path().u8string() + "] - " +
-                          doc->getPdfFilepath().filename().u8string());
-            } else {
-                title += doc->getPdfFilepath().filename().u8string();
-            }
-        }
+    this->doc->lock_shared();
+    const fs::path& refPath = doc->getFilepath().empty() ? doc->getPdfFilepath() : doc->getFilepath();
+    if (refPath.empty()) {
+        title = _("Unsaved Document");
     } else {
         if (settings->isPageNumberInTitlebarShown()) {
-            title += ("[" + std::to_string(getCurrentPageNo() + 1) + "/" + std::to_string(doc->getPageCount()) + "]  ");
+            title = "[" + std::to_string(getCurrentPageNo() + 1) + "/" + std::to_string(doc->getPageCount()) + "]  ";
         }
         if (undoRedo->isChanged()) {
             title += "*";
         }
 
         if (settings->isFilepathInTitlebarShown()) {
-            title += ("[" + doc->getFilepath().parent_path().u8string() + "] - " +
-                      doc->getFilepath().filename().u8string());
-        } else {
-            title += doc->getFilepath().filename().u8string();
+            title += std::string("[") + char_cast(refPath.parent_path().u8string().c_str()) + "] - ";
         }
+        title += char_cast(refPath.filename().u8string());
     }
-    this->doc->unlock();
+    this->doc->unlock_shared();
 
     title += " - Xournal++";
 
@@ -2018,9 +2106,9 @@ void Control::saveImpl(bool saveAs, std::function<void(bool)> callback) {
     // clear selection before saving
     clearSelectionEndText();
 
-    this->doc->lock();
+    this->doc->lock_shared();
     fs::path filepath = this->doc->getFilepath();
-    this->doc->unlock();
+    this->doc->unlock_shared();
 
     auto doSave = [ctrl = this, cb = std::move(callback)]() {
         // clear selection before saving
@@ -2033,11 +2121,11 @@ void Control::saveImpl(bool saveAs, std::function<void(bool)> callback) {
 
     if (saveAs || filepath.empty()) {
         // No need to backup the old saved file, as there is none
-        this->doc->lock();
+        this->doc->lock_shared();
         this->doc->setCreateBackupOnSave(false);
         auto suggestedPath = this->doc->createSaveFoldername(this->settings->getLastSavePath());
         suggestedPath /= this->doc->createSaveFilename(Document::XOPP, this->settings->getDefaultSaveName());
-        this->doc->unlock();
+        this->doc->unlock_shared();
         xoj::SaveExportDialog::showSaveFileDialog(getGtkWindow(), settings, std::move(suggestedPath),
                                                   [doSave = std::move(doSave), ctrl = this](std::optional<fs::path> p) {
                                                       if (p && !p->empty()) {
@@ -2054,9 +2142,9 @@ void Control::saveImpl(bool saveAs, std::function<void(bool)> callback) {
 }
 
 void Control::resetSavedStatus() {
-    this->doc->lock();
+    this->doc->lock_shared();
     auto filepath = this->doc->getFilepath();
-    this->doc->unlock();
+    this->doc->unlock_shared();
 
     this->undoRedo->documentSaved();
     RecentManager::addRecentFileFilename(filepath);
@@ -2093,12 +2181,19 @@ void Control::quit(bool allowCancel) {
     this->close(std::move(afterClosed), true, allowCancel);
 }
 
-void Control::close(std::function<void(bool)> callback, const bool allowDestroy, const bool allowCancel) {
+void Control::close(std::function<void(bool)> callback, const bool allowDestroy, const bool allowCancel,
+                    const bool forceClose) {
     clearSelectionEndText();
+
+    doc->lock_shared();
+    auto const& file = doc->getEvMetadataFilename();
+    doc->unlock_shared();
+    metadata->storeMetadata(file, static_cast<int>(getCurrentPageNo()), zoom->getZoomReal());
     metadata->documentChanged();
+
     resetGeometryTool();
 
-    bool safeToClose = !undoRedo->isChanged();
+    bool safeToClose = forceClose || !undoRedo->isChanged();
     if (!safeToClose) {
         fs::path path = doc->getFilepath();
         const bool fileRemoved = !path.empty() && !fs::exists(path);
@@ -2142,13 +2237,17 @@ void Control::closeDocument() {
     this->doc->clearDocument(true);
     this->doc->unlock();
 
+    if (navHistory) {
+        navHistory->reset();
+    }
+
     this->undoRedoChanged();
 }
 
 void Control::initButtonTool() {
     std::vector<Button> buttons{Button::BUTTON_ERASER,     Button::BUTTON_STYLUS_ONE,   Button::BUTTON_STYLUS_TWO,
                                 Button::BUTTON_MOUSE_LEFT, Button::BUTTON_MOUSE_MIDDLE, Button::BUTTON_MOUSE_RIGHT,
-                                Button::BUTTON_TOUCH};
+                                Button::BUTTON_MOUSE_4,    Button::BUTTON_MOUSE_5,      Button::BUTTON_TOUCH};
     ButtonConfig* cfg;
     for (auto b: buttons) {
         cfg = settings->getButtonConfig(b);
@@ -2178,7 +2277,7 @@ void Control::showGtkDemo() {
         // Try absolute path for binary
         auto path = Util::getExePath() / binary;
 
-        binary = path.string();
+        binary = Util::toGFilename(path).c_str();
     }
 #endif
     gchar* prog = g_find_program_in_path(binary.c_str());
@@ -2229,23 +2328,26 @@ void Control::clipboardPasteText(string text) {
 
 void Control::clipboardPasteImage(GdkPixbuf* img) {
     auto image = std::make_unique<Image>();
-    image->setImage(img);
+    xoj::util::GObjectSPtr<GdkPixbuf> pixbuf(gdk_pixbuf_apply_embedded_orientation(img), xoj::util::adopt);
 
-    auto width =
-            static_cast<double>(gdk_pixbuf_get_width(img)) / settings->getDisplayDpi() * Util::DPI_NORMALIZATION_FACTOR;
-    auto height = static_cast<double>(gdk_pixbuf_get_height(img)) / settings->getDisplayDpi() *
-                  Util::DPI_NORMALIZATION_FACTOR;
+    image->setImage(pixbuf.get());
+
+    auto zoom100 = this->getZoomControl()->getZoom100Value();
+
+    auto width = static_cast<double>(gdk_pixbuf_get_width(pixbuf.get())) / zoom100;
+    auto height = static_cast<double>(gdk_pixbuf_get_height(pixbuf.get())) / zoom100;
 
     auto pageNr = getCurrentPageNo();
     if (pageNr == npos) {
         return;
     }
 
-    this->doc->lock();
+    this->doc->lock_shared();
     PageRef page = this->doc->getPage(pageNr);
     auto pageWidth = page->getWidth();
     auto pageHeight = page->getHeight();
-    this->doc->unlock();
+    page.reset();  // No need to hold a ref to the page anymore
+    this->doc->unlock_shared();
 
     // Size: 3/4 of the page size
     pageWidth = pageWidth * 3.0 / 4.0;
@@ -2283,10 +2385,10 @@ void Control::clipboardPaste(ElementPtr e) {
         return;
     }
 
-    this->doc->lock();
+    this->doc->lock_shared();
     PageRef page = this->doc->getPage(pageNr);
     Layer* layer = page->getSelectedLayer();
-    this->doc->unlock();
+    this->doc->unlock_shared();
 
     win->getXournal()->getPasteTarget(x, y);
 

@@ -11,7 +11,7 @@
 #include "util/XojMsgBox.h"               // for XojMsgBox
 #include "util/i18n.h"                    // for FS, _F
 
-#include "filesystem.h"  // for path, u8path
+#include "filesystem.h"  // for path
 
 AutosaveJob::AutosaveJob(Control* control): control(control) {}
 
@@ -29,25 +29,29 @@ void AutosaveJob::run() {
 
     Document* doc = control->getDocument();
 
-    doc->lock();
+    doc->lock_shared();
     auto filepath = doc->getFilepath();
 
     if (filepath.empty()) {
         filepath = Util::getAutosaveFilepath();
     } else {
-        filepath.replace_filename(fs::u8path(u8"." + filepath.filename().u8string()));
+        filepath.replace_filename(fs::path(".") += filepath.filename());
     }
     Util::clearExtensions(filepath);
     filepath += ".autosave.xopp";
 
     handler.prepareSave(doc, filepath);
-    doc->unlock();
+    doc->unlock_shared();
 
     g_message("%s", FS(_F("Autosaving to {1}") % filepath.string()).c_str());
 
     fs::path tempfile = filepath;
     tempfile += u8"~";
     handler.saveTo(tempfile);
+
+    doc->lock();
+    handler.updateDocumentInfo(doc);
+    doc->unlock();
 
     this->error = handler.getErrorMessage();
     if (!this->error.empty()) {

@@ -2,8 +2,10 @@ name: Build
 
 on:
   pull_request:
-    branches: [ "master", "release-*" ]
-    ignores-paths:
+    branches: 
+      - "master"
+      - "release-*"
+    paths-ignore:
       - 'po/xournalpp.pot'
       - 'po/*.po'
 
@@ -21,13 +23,13 @@ jobs:
       macos_builds: ${{ steps.parse.outputs.macos_builds }}
       windows_builds: ${{ steps.parse.outputs.windows_builds }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:  # Get the build targets
           sparse-checkout: '${{ env.build-targets-json }}'
           sparse-checkout-cone-mode: false
       - name: 'Parse list of targets'
         id: parse
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const available_targets = require('${{ env.build-targets-json }}')
@@ -65,7 +67,7 @@ jobs:
       image: ${{ matrix.run.container_image }}
     name: 'Test Xournal++ on ${{ matrix.run.displayed_name }}'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: 'Install dependencies'
         uses: ./.github/actions/install_deps_ubuntu
         with:
@@ -114,6 +116,12 @@ jobs:
           sudo locale-gen
           LC_ALL=zh_CN.GB18030 CI=true ./test/test-units
         working-directory: ${{github.workspace}}/build
+      - name: 'Run tests zh_CN.GB18030 G_FILENAME_ENCODING=GB18030' # Test for non-UTF-8 locales
+        if: always() && steps.build-test.outcome == 'success'  # Run the test in every locale even if it failed in another
+        run: |
+          # Omit the tests that actually try to open files with utf8 paths, as the system's filename encoding does not match
+          G_FILENAME_ENCODING=GB18030 LC_ALL=zh_CN.gb18030 CI=true ./test/test-units --gtest_filter=-ControlLoadHandler.testLoadStoreCJK:ControlLoadHandler.testRelativePath
+        working-directory: ${{github.workspace}}/build
       - name: 'Run gtk-integration tests'
         # Todo: Port this to MacOS and Windows
         run: |
@@ -131,7 +139,7 @@ jobs:
     runs-on: ${{ matrix.run.runner }}
     name: 'Test Xournal++ on ${{ matrix.run.displayed_name }}'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: 'Install dependencies'
         uses: ./.github/actions/install_deps_windows
         with:
@@ -161,7 +169,7 @@ jobs:
     runs-on: ${{ matrix.run.runner }}
     name: 'Test Xournal++ on ${{ matrix.run.displayed_name }}'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: 'Install dependencies'
         uses: ./.github/actions/install_deps_mac
         with:

@@ -3,6 +3,7 @@
 #include <cmath>     // for fabs, M_PI
 #include <iterator>  // for begin, next
 #include <memory>    // for allocator...
+#include <span>      // for span
 #include <utility>   // for move
 #include <vector>    // for vector
 
@@ -30,6 +31,77 @@ void ShapeRecognizer::resetRecognizer() {
     RDEBUG("reset");
     this->queue = {};
     this->queueLength = 0;
+}
+
+inline double dist2(const Point& P, const Point& Q) {
+    const double dx = P.x - Q.x;
+    const double dy = P.y - Q.y;
+    return dx * dx + dy * dy;
+}
+
+auto ShapeRecognizer::tryTriangle() -> std::unique_ptr<Stroke> {
+    // first, we need whole strokes to combine to 3 segments...
+    if (this->queueLength < 3) {
+        return nullptr;
+    }
+
+    RecoSegment* rs = &this->queue[as_unsigned(this->queueLength - 3)];
+    if (rs->startpt != 0) {
+        return nullptr;
+    }
+
+    /*
+    Make segments be oriented so that, for every pair of neighbouring segments,
+    the first segment points towards the second. This should make the polygon
+    have all of its segments oriented either clockwise or counter-clockwise.
+
+    The direction of any segment R is defined from P to Q where
+    if R is not reversed then
+        P is (x1,y1)
+        Q is (x2,y2)
+    else
+        P is (x2,y2)
+        Q is (x1,y1)
+    */
+    for (int i = 0; i <= 2; i++) {
+        RecoSegment& r1 = rs[i];
+        const RecoSegment& r2 = rs[(i + 1) % 3];
+
+        const Point P(r1.x1, r1.y1);
+        const Point Q(r1.x2, r1.y2);
+        const Point R(r2.x1, r2.y1);
+        const Point S(r2.x2, r2.y2);
+        const double min_PR_PS = std::min(dist2(P, R), dist2(P, S));
+        const double min_QR_QS = std::min(dist2(Q, R), dist2(Q, S));
+        r1.reversed = min_PR_PS < min_QR_QS;
+    }
+
+    for (int i = 0; i <= 2; i++) {
+        const RecoSegment& r1 = rs[i];
+        const RecoSegment& r2 = rs[(i + 1) % 3];
+
+        const double x1 = r1.reversed ? r1.x1 : r1.x2;
+        const double y1 = r1.reversed ? r1.y1 : r1.y2;
+        const double x2 = r2.reversed ? r2.x2 : r2.x1;
+        const double y2 = r2.reversed ? r2.y2 : r2.y1;
+
+        const double dist = hypot(x1 - x2, y1 - y2);
+        if (dist > TRIANGLE_LINEAR_TOLERANCE * (r1.radius + r2.radius)) {
+            return nullptr;
+        }
+    }
+
+    auto s = std::make_unique<Stroke>();
+    s->applyStyleFrom(this->stroke);
+
+    for (int i = 0; i <= 2; i++) {
+        Point p = rs[i].calcEdgeIsect(&rs[(i + 1) % 3]);
+        s->addPoint(p);
+    }
+
+    s->addPoint(s->getPoint(0));
+
+    return s;
 }
 
 /**
@@ -102,14 +174,16 @@ auto ShapeRecognizer::tryRectangle() -> std::unique_ptr<Stroke> {
     return s;
 }
 
-/*
- * check if something is a polygonal line with at most nsides sides
+/**
+ * Check if something is a polygonal line with at most nsides sides.
+ * [start, finish] (inclusive) specifies the range to operate on in the pt array.
  */
-auto ShapeRecognizer::findPolygonal(const Point* pt, int start, int end, int nsides, int* breaks, Inertia* ss) -> int {
+auto ShapeRecognizer::findPolygonal(const Point* pt, int start, int finish, int nsides, int* breaks, Inertia* ss)
+        -> int {
     Inertia s;
     int i1 = 0, i2 = 0, n1 = 0, n2 = 0;
 
-    if (end == start) {
+    if (finish == start) {
         return 0;  // no way
     }
 
@@ -117,16 +191,16 @@ auto ShapeRecognizer::findPolygonal(const Point* pt, int start, int end, int nsi
         return 0;
     }
 
-    if (end - start < 5) {
+    if (finish - start < 5) {
         nsides = 1;  // too small for a polygon
     }
 
     // look for a linear piece that's big enough
     int k = 0;
     for (; k < nsides; k++) {
-        i1 = start + (k * (end - start)) / nsides;
-        i2 = start + ((k + 1) * (end - start)) / nsides;
-        s.calc(pt, i1, i2);
+        i1 = start + (k * (finish - start)) / nsides;
+        i2 = start + ((k + 1) * (finish - start)) / nsides;
+        s.calc(std::span<const Point>(pt + i1, pt + i2 + 1));
         if (s.det() < SEGMENT_MAX_DET) {
             break;
         }
@@ -150,7 +224,7 @@ auto ShapeRecognizer::findPolygonal(const Point* pt, int start, int end, int nsi
             det1 = 1.0;
         }
 
-        if (i2 < end) {
+        if (i2 < finish) {
             s2 = s;
             s2.increase(pt[i2], pt[i2 + 1], 1);
             det2 = s2.det();
@@ -170,7 +244,7 @@ auto ShapeRecognizer::findPolygonal(const Point* pt, int start, int end, int nsi
     }
 
     if (i1 > start) {
-        n1 = findPolygonal(pt, start, i1, (i2 == end) ? (nsides - 1) : (nsides - 2), breaks, ss);
+        n1 = findPolygonal(pt, start, i1, (i2 == finish) ? (nsides - 1) : (nsides - 2), breaks, ss);
         if (n1 == 0) {
             return 0;  // it doesn't work
         }
@@ -182,8 +256,8 @@ auto ShapeRecognizer::findPolygonal(const Point* pt, int start, int end, int nsi
     breaks[n1 + 1] = i2;
     ss[n1] = s;
 
-    if (i2 < end) {
-        n2 = findPolygonal(pt, i2, end, nsides - n1 - 1, breaks + n1 + 1, ss + n1 + 1);
+    if (i2 < finish) {
+        n2 = findPolygonal(pt, i2, finish, nsides - n1 - 1, breaks + n1 + 1, ss + n1 + 1);
         if (n2 == 0) {
             return 0;
         }
@@ -305,6 +379,10 @@ auto ShapeRecognizer::recognizePatterns(Stroke* stroke, double strokeMinSize) ->
             rs[i].calcSegmentGeometry(stroke->getPoints(), brk[i], brk[i + 1], ss + i);
         }
 
+        if (auto result = tryTriangle(); result != nullptr) {
+            RDEBUG("return triangle");
+            return result;
+        }
         if (auto result = tryRectangle(); result != nullptr) {
             RDEBUG("return rectangle");
             return result;

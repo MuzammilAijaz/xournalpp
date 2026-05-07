@@ -5,13 +5,14 @@ on:
     branches: [ "master", "release-*" ]
     paths:
       - 'src/core/plugin/luapi_application.h'
+      - 'src/core/enums/generated/Action.NameMap.generated.h'
 
 jobs:
   Test_Lua_definition:
     runs-on: ubuntu-latest
     name: 'Check that lua definitions file is up-to-date'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: 'Install python3'
         shell: bash
         run: |

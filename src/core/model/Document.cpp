@@ -27,6 +27,7 @@
 #include "util/i18n.h"                        // for FS, _F
 #include "util/raii/GObjectSPtr.h"            // for GObjectSPtr
 #include "util/safe_casts.h"                  // for as_signed
+#include "util/utf8_view.h"                   // for utf8
 
 #include "LinkDestination.h"  // for XojLinkDest, DOCUMENT_L...
 #include "XojPage.h"          // for XojPage
@@ -63,40 +64,19 @@ auto Document::freeTreeContentEntry(GtkTreeModel* treeModel, GtkTreePath* path, 
     return false;
 }
 
-void Document::lock() {
-    this->documentLock.lock();
-
-    //	if(tryLock()) {
-    //		fprintf(stderr, "Locked by\n");
-    //		Stacktrace::printStacktrace();
-    //		fprintf(stderr, "\n\n\n\n");
-    //	} else {
-    //		g_mutex_lock(&this->documentLock);
-    //	}
-}
-
-void Document::unlock() {
-    this->documentLock.unlock();
-
-    //	fprintf(stderr, "Unlocked by\n");
-    //	Stacktrace::printStacktrace();
-    //	fprintf(stderr, "\n\n\n\n");
-}
-
-/*
-** Returns true when successfully acquiring lock.
-*/
-auto Document::tryLock() -> bool { return this->documentLock.try_lock(); }
+void Document::lock() { this->documentLock.lock(); }
+void Document::unlock() { this->documentLock.unlock(); }
+auto Document::try_lock() -> bool { return this->documentLock.try_lock(); }
+void Document::lock_shared() { this->documentLock.lock_shared(); }
+void Document::unlock_shared() { this->documentLock.unlock_shared(); }
+auto Document::try_lock_shared() -> bool { return this->documentLock.try_lock_shared(); }
 
 void Document::clearDocument(bool destroy) {
-    if (this->preview) {
-        cairo_surface_destroy(this->preview);
-        this->preview = nullptr;
-    }
+    this->preview.reset();
 
     if (!destroy) {
         // release lock
-        bool lastLock = tryLock();
+        bool lastLock = try_lock();
         unlock();
         this->handler->fireDocumentChanged(DOCUMENT_CHANGE_CLEARED);
         if (!lastLock)  // document was locked before
@@ -149,25 +129,25 @@ auto Document::createSaveFoldername(const fs::path& lastSavePath) const -> fs::p
  * @param formatStr The input format string to preprocess.
  * @return The processed format string with standardized specifiers.
  */
-static std::string preprocessFormatString(std::string formatStr) {
-    auto replace = [&formatStr](std::string_view pattern, std::string_view replacement) {
+static std::u8string preprocessFormatString(std::u8string formatStr) {
+    auto replace = [&formatStr](std::u8string_view pattern, std::u8string_view replacement) {
         for (size_t pos = formatStr.find(pattern); pos != std::string::npos;
              pos = formatStr.find(pattern, pos + replacement.length())) {
             formatStr.replace(pos, pattern.length(), replacement);
         }
     };
 
-    replace("%F", "%Y-%m-%d");
-    replace("%T", "%H-%M-%S");
-    replace("%V", "%U");
+    replace(u8"%F", u8"%Y-%m-%d");
+    replace(u8"%T", u8"%H-%M-%S");
+    replace(u8"%V", u8"%U");
 
     return formatStr;
 }
 
-auto Document::createSaveFilename(DocumentType type, const std::string& defaultSaveName,
-                                  const std::string& defaultPdfName) const -> fs::path {
+auto Document::createSaveFilename(DocumentType type, std::u8string_view defaultSaveName,
+                                  std::u8string_view defaultPdfName) const -> fs::path {
     constexpr static std::wstring_view forbiddenChars = {L"\\/:*?\"<>|"};
-    std::string wildcardString;
+    std::u8string wildcardString;
     if (type != Document::PDF) {
         if (!filepath.empty()) {
             // This can be any extension
@@ -188,11 +168,10 @@ auto Document::createSaveFilename(DocumentType type, const std::string& defaultS
                                                                         this->filepath.filename());
     }
 
-    auto format_str = wildcardString.empty() ? defaultSaveName : wildcardString;
+    auto format_str = preprocessFormatString(wildcardString.empty() ? defaultSaveName.data() : wildcardString);
 
-    format_str = preprocessFormatString(format_str);
     std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
-    auto format = converter.from_bytes(format_str);
+    auto format = converter.from_bytes(char_cast(format_str).data());
 
     // Todo (cpp20): use <format>
     std::wostringstream ss;
@@ -207,24 +186,15 @@ auto Document::createSaveFilename(DocumentType type, const std::string& defaultS
     }
 
     auto fn2 = converter.to_bytes(filename);
-    auto p = fs::u8path(fn2);
+    auto p = fs::path(xoj::util::utf8(fn2));
 
     Util::clearExtensions(p);
     return p;
 }
 
-auto Document::getPreview() const -> cairo_surface_t* { return this->preview; }
+auto Document::getPreview() const -> xoj::util::CairoSurfaceSPtr { return this->preview; }
 
-void Document::setPreview(cairo_surface_t* preview) {
-    if (this->preview) {
-        cairo_surface_destroy(this->preview);
-    }
-    if (preview) {
-        this->preview = cairo_surface_reference(preview);
-    } else {
-        this->preview = nullptr;
-    }
-}
+void Document::setPreview(xoj::util::CairoSurfaceSPtr preview) { this->preview = std::move(preview); }
 
 auto Document::getEvMetadataFilename() const -> fs::path {
     if (!this->filepath.empty()) {
@@ -486,7 +456,8 @@ auto Document::operator=(const Document& doc) -> Document& {
     buildContentsModel();
     updateIndexPageNumbers();
 
-    bool lastLock = tryLock();
+    bool lastLock = try_lock();
+    xoj_assert(!lastLock);
     unlock();
     this->handler->fireDocumentChanged(DOCUMENT_CHANGE_COMPLETE);
     if (!lastLock)  // document was locked before

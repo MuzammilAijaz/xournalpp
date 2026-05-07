@@ -90,7 +90,7 @@ bool QPdfExport::overlayAndSave(const fs::path& saveDestination, std::stringstre
         overlay.processMemoryFile("overlay", overlaydata.data(), overlaydata.length());
 
         QPDF background;
-        background.processFile(doc->getPdfFilepath().u8string().c_str());  // TODO: UTF8 is ok?
+        background.processFile(char_cast(doc->getPdfFilepath().u8string().c_str()));  // TODO: UTF8 is ok?
 
         reorderBackgrounds(background, outputPageInfos);
 
@@ -99,7 +99,8 @@ bool QPdfExport::overlayAndSave(const fs::path& saveDestination, std::stringstre
         auto overlayPages = QPDFPageDocumentHelper(overlay).getAllPages();
         overlaysAsXObjects.reserve(overlayPages.size());
         for (auto&& p: overlayPages) {
-            overlaysAsXObjects.emplace_back(p.getFormXObjectForPage());
+            auto&& xobj = overlaysAsXObjects.emplace_back(p.getFormXObjectForPage());
+            xobj.getDict().getKey("/Group").removeKey("/I");
         }
 
         auto outputPages = QPDFPageDocumentHelper(background).getAllPages();
@@ -166,7 +167,7 @@ bool QPdfExport::overlayAndSave(const fs::path& saveDestination, std::stringstre
         replaceKey("/Producer", (std::string(PROJECT_STRING) + " + QPDF " + QPDF_VERSION));
         replaceKey("/ModDate", createPDFDateStringForNow());
 
-        QPDFWriter writer(background, saveDestination.u8string().data());  // is UTF8 ok?
+        QPDFWriter writer(background, char_cast(saveDestination.u8string().data()));  // is UTF8 ok?
         writer.write();
     } catch (const std::exception& e) {
         this->lastError = _("Error with overlay or final export:");
